@@ -1,0 +1,11 @@
+[gd_resource type="Resource" script_class="ActionCardData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://dw6yftjiipacc" path="res://data/action_card_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"action_02"
+card_name = "Extra Move"
+text = "All Units in a space you control get +1 Move until the end of the round."
+card_type = 1
+effect_id = &"action_02"

@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="ArtefactData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://dlrkfiuh7imuh" path="res://data/artefact_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"snooperbot_6000"
+display_name = "Snooperbot 6000"
+text = "During the Recruitment Phase, instead of drawing Action cards normally, you may draw as many Action cards as there are players, look at them, and distribute one card to each player. Discard this card."
+effect_id = &"snooperbot_6000"

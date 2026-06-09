@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="LeaderData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://hmvbfreteua6" path="res://data/leader_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"the_rats_eye"
+display_name = "The Rat's Eye"
+passive_text = "+1 Range to your Warriors and Gunners."
+passive_effect_id = &"ratseye_range"

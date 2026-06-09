@@ -1,0 +1,11 @@
+[gd_resource type="Resource" script_class="ActionCardData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://dw6yftjiipacc" path="res://data/action_card_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"action_11"
+card_name = "Force Discard"
+text = "Any player discards 2 Action cards."
+card_type = 0
+effect_id = &"action_11"

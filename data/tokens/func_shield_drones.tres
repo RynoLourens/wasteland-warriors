@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="FunctionTokenData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://cybktd43vtqgj" path="res://data/function_token_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"func_shield_drones"
+display_name = "Shield Drones"
+text = "Each Unit in this space gets +1 Defense."
+effect_id = &"func_shield_drones"

@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="ArtefactData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://dlrkfiuh7imuh" path="res://data/artefact_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"psychic_control_belt"
+display_name = "Psychic Control Belt"
+text = "During the Guardian Phase, choose one of your Units or Special Units and then one Unit or Special Unit in an adjacent space belonging to an enemy player. That enemy Unit now belongs to you. Discard this card."
+effect_id = &"psychic_control_belt"

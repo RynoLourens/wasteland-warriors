@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="ArtefactData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://dlrkfiuh7imuh" path="res://data/artefact_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"sunstone_fragments"
+display_name = "Sunstone Fragments"
+text = "During the Action Phase, choose a space with one or more of your Units or Special Units. Any Units with Range (including Guardians) that Attack this space can only hit on a 6 this round. Discard this card."
+effect_id = &"sunstone_fragments"

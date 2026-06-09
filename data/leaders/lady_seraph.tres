@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="LeaderData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://hmvbfreteua6" path="res://data/leader_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"lady_seraph"
+display_name = "Lady Seraph"
+passive_text = "When Recruiting, draw 5 Units / 3 Special Units instead of the usual 3 / 2."
+passive_effect_id = &"seraph_recruit"

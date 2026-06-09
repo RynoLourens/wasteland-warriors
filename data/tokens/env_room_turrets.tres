@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="EnvironmentTokenData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://co520tl82xmd6" path="res://data/environment_token_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"env_turrets"
+display_name = "Turrets"
+text = "Roll 3 Attack dice against your Units."
+effect_id = &"env_turrets"
+category = "Room"
+persists_in_room = false

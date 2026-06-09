@@ -1,0 +1,27 @@
+# Godot 4 .gitignore
+# Godot editor caches & imported asset binaries — regenerated on open.
+.godot/
+.import/
+export.cfg
+export_presets.cfg
+
+# Godot build templates / exports
+build/
+*.tmp
+
+# Mono/C# (unused for now, harmless to keep)
+.mono/
+data_*/
+mono_crash.*.json
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+desktop.ini
+
+# Mobile signing secrets — NEVER commit (Section J).
+*.keystore
+*.jks
+release.keystore
+**/*.p12

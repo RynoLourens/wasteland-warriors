@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="LeaderData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://hmvbfreteua6" path="res://data/leader_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"siyana_the_shield"
+display_name = "Siyana the Shield"
+passive_text = "+1 Defense to your Warriors and Heavies."
+passive_effect_id = &"siyana_defense"

@@ -1,0 +1,11 @@
+[gd_resource type="Resource" script_class="ActionCardData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://dw6yftjiipacc" path="res://data/action_card_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"action_14"
+card_name = "Cancel Attack"
+text = "Cancel one round of Attack."
+card_type = 2
+effect_id = &"action_14"

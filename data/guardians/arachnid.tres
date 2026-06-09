@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="GuardianData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://bv1kl6do5j2tc" path="res://data/guardian_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"arachnid"
+display_name = "Arachnid"
+move = 1
+attack = 1
+defense = 1
+range = 2
+attack_dice = 1
+crit_on = 6
+hit_only_on = 0
+attacks_on_move = false
+applies_hits_first = false
+extra_attack_rounds = 0
+moves_through_walls = false
+reduces_attack = false

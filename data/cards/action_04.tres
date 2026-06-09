@@ -1,0 +1,11 @@
+[gd_resource type="Resource" script_class="ActionCardData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://dw6yftjiipacc" path="res://data/action_card_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"action_04"
+card_name = "Deploy Special Unit"
+text = "Place 1 Special Unit from the Supply in your Rally Zone."
+card_type = 0
+effect_id = &"action_04"

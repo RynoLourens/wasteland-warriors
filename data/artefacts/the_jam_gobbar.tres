@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="ArtefactData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://dlrkfiuh7imuh" path="res://data/artefact_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"the_jam_gobbar"
+display_name = "The Jam Gobbar"
+text = "Remove up to 5 Cowards from your bag. Discard this card."
+effect_id = &"the_jam_gobbar"

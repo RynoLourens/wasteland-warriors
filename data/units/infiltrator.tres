@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="UnitData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://bu2351qdon2yu" path="res://data/unit_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"infiltrator"
+display_name = "Infiltrator"
+move = 1
+attack = 1
+defense = 1
+range = 1
+crit_on = 6
+hit_only_on = 6
+moves_through_enemies = true
+extra_setup_move = false
+places_sticky_bomb = false

@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="FunctionTokenData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://cybktd43vtqgj" path="res://data/function_token_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"func_teleporter_hub"
+display_name = "Teleporter Hub"
+text = "During Recruitment, you may Deploy Units into this space instead of your Rally Zone. Activate this space."
+effect_id = &"func_teleporter_hub"
