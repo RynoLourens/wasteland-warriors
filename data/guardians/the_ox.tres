@@ -6,9 +6,9 @@
 script = ExtResource("1")
 id = &"the_ox"
 display_name = "The Ox"
-move = 1
-attack = 1
-defense = 1
+move = 3
+attack = 2
+defense = 3
 range = 1
 attack_dice = 2
 crit_on = 6

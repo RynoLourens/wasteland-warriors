@@ -6,7 +6,7 @@
 script = ExtResource("1")
 id = &"sapperteur"
 display_name = "Sapperteur"
-move = 1
+move = 2
 attack = 1
 defense = 1
 range = 1

@@ -4,15 +4,28 @@
 18 env/function tokens, 13 action cards). All effect/passive text is transcribed from the
 rulebook (Ch.13) and the card art. The boxes below are ticked accordingly.
 
-**One gap remaining — confirm from the printed token art:**
-- Guardians' base combat numbers (`move`/`attack`/`defense`/`attack_dice`) are placeholder
-  `1`s (except The Ox attack_dice=2, Arachnid range=2, which come from the rules). Read the
-  real values off `GUARDIAN TOKEN *.png` and update.
-- Special units' `attack`/`defense` are placeholder `1`s — confirm vs `SPECIAL UNIT TOKEN *.png`.
+**Combat numbers — ✅ READ FROM TOKEN ART (2026-06-09).** Token convention confirmed:
+blue boot (TL) = Move, red star (BL) = Attack, green vest (BR) = Defense. The red-star
+number = **attack_dice** (set both `attack` and `attack_dice` to it). A **superscript number
+on the attack star = attack RANGE** (Arachnid ²→range 2, Gunner/Manstopper ¹→range 1). A plain
+`*` (no number) just flags that an ability touches that stat — already covered by ability flags.
+
+Guardian stats (move / attack=attack_dice / defense / range):
+- Arachnid 1 / 2 / 3 / 2 · Blackout 2 / 3 / 2 / 1 · Blink 2 / 3 / 2 / 1 · Cutter 4 / 3 / 1 / 1
+- Scrape 1 / 2 / 5 / 1 · The Ox 3 / 2 / 3 / 1 · Typhoon 3 / 3 / 2 / 1
+Special-unit stats (move / attack / defense / range):
+- Berserker 1 / 2 / 2 / 1 · Infiltrator 2 / 0 / 1 / 1 · Manstopper 2 / 2 / 1 / 1 · Sapperteur 2 / 1 / 1 / 1
+
+Razor stats (no token image; given by Corin 2026-06-09): **2 / 2 / 2 / 1** (move / attack=dice / defense / range), `applies_hits_first = true` (First Strike — hits land before opponents roll).
+
+**Leaders — ALL 5 DONE.** The game has **5 leaders total, not 7** (corrected 2026-06-09):
+Stormfoot, The Rat's Eye, Lady Seraph, Siyana, **Lil' Minerva** (start +1 Action Card; on draw, draw 2 discard 1 — `minerva_card_advantage`). All authored as `.tres`.
+
+**Remaining gaps:**
 - Action card `card_type` was inferred from the highlighted RECRUIT/MOVE/ATTACK tab; spot-check
   card 06 (Sabotage Bag) — its tab was ambiguous, currently set RECRUITMENT.
 
-Cards **08** and **12** remain deferred (art missing from the set).
+The 13 action cards are the **COMPLETE deck** — the 08/12 numbering gaps are just non-contiguous export numbers, NOT missing cards (confirmed by Corin 2026-06-09). Same for the numbered tile drafts: all distinct, nothing missing.
 
 ---
 

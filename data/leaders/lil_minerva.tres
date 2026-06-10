@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="LeaderData" load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://hmvbfreteua6" path="res://data/leader_data.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"lil_minerva"
+display_name = "Lil' Minerva"
+passive_text = "You start the game with 1 extra Action Card. Whenever you draw an Action Card, draw 2 Cards instead and discard 1 Card from your hand."
+passive_effect_id = &"minerva_card_advantage"

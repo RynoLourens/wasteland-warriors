@@ -5,7 +5,7 @@
 **Scope decisions baked into this plan (from review):**
 
 - **v1 target:** Hotseat (local pass-and-play) **plus a rules-based AI opponent** at a single **medium** difficulty. Empty seats are **filled by AI by default**. No online multiplayer in v1.
-- **Content target:** Full **3-player** game with the **4 designed Leaders**. All missing content (3 Leaders, 2P/4P layouts, missing Action cards, missing tiles, FAQ) is **deferred** — handled as data-driven slots to fill later, not part of v1 work.
+- **Content target:** Full **3-player** game with **all 5 Leaders** (the game has 5 total — Stormfoot, The Rat's Eye, Lady Seraph, Siyana, Lil' Minerva — all now authored as `.tres`). The Action-card deck (13 cards) and tile set are **complete** — the gaps in card numbering (08/12) and tile-draft numbers are just non-contiguous numbering, NOT missing content. The only genuinely deferred content is **2P/4P layouts and the FAQ** — data-driven slots to fill later, not part of v1 work.
 - **Platform target:** **Mobile-first — a phone app held sideways (landscape) is the ideal platform**, with PC as a co-supported target. Godot exports to both from one project. This drives UI density, touch-target sizing, and layout throughout (see Section F/G).
 - **Engine:** Godot 4, GDScript. Already installed.
 - **Resourcing:** Solo, part-time. Milestones are sized as self-contained chunks you can finish in a sitting or two, so progress survives gaps between sessions.
@@ -50,9 +50,9 @@ Each section lists concrete steps. Code-level detail (node structures, resource 
 > (https://github.com/RynoLourens/wasteland-warriors). Folder layout, `EventBus` +
 > `GameState` autoloads, all 7 `Resource` schema scripts, GUT installed/enabled, and
 > **56 `.tres` instances** authored (8 units, 8 guardians, 4 leaders, 5 artefacts,
-> 18 env/function tokens, 13 action cards). Open items carried forward: confirm guardian/
-> special-unit base combat numbers and a few card types from the printed token art
-> (tracked in `SECTION-A-tres-checklist.md`); Action cards 08 & 12 deferred.
+> 18 env/function tokens, **13 action cards = the COMPLETE deck** — the 08/12 gaps are
+> just non-contiguous numbering, not missing cards). Combat numbers now all read from
+> token art (tracked in `SECTION-A-tres-checklist.md`).
 
 **Steps:**
 
@@ -73,13 +73,13 @@ Each section lists concrete steps. Code-level detail (node structures, resource 
    - `GuardianData` — same shape plus guardian-specific flags: `crit_on`, `hit_only_on`, `attack_dice`, `attacks_on_move:bool` (The Ox), `applies_hits_first:bool` (Razor), `extra_attack_rounds:int` (Scrape), `moves_through_walls:bool` (Blink), `reduces_attack:bool` (Blackout), plus `range` (Arachnid=2).
    - `ActionCardData` — `id`, `name`, `text`, `card_type:enum{RECRUITMENT, MOVEMENT, ATTACK}`, and an `effect_id` the rules engine dispatches on.
    - `ArtefactData`, `EnvironmentTokenData`, `FunctionTokenData` — `id`, `name`, `effect_id`, `color/category`, `persists_in_room:bool` (Teleporter Node, Darkness, Tough Terrain stay).
-   - `LeaderData` — `id`, `name`, `passive_effect_id`. Build the 4 designed Leaders; leave the schema ready for 3 more.
+   - `LeaderData` — `id`, `name`, `passive_effect_id`. All **5** Leaders authored (the game has 5 total).
 5. **Author the `.tres` instances** straight from the rulebook:
    - Units: Warrior M1/A2/D1, Heavy M1/A1/D2, Gunner M1/A1-R1/D1, Scout M2/A1/D1, plus the 4 Special Units with their flags.
    - 8 Guardians (Blackout, The Ox, Blink, Cutter, Typhoon, Razor, Arachnid, Scrape) with flags. Note: the rulebook's Guardian *list* in Ch.12 names these — confirm the bag is 8 Guardians + 4 Scrap.
-   - Action cards: author **only the cards whose effects are finalized.** Missing/ungapped cards (e.g. exports 08, 12) are **deferred** — leave their `effect_id` slots ready but don't invent content now.
+   - Action cards: **all 13 authored = the complete deck.** The 08/12 numbering gaps are not missing cards, just non-contiguous export numbers.
    - Artefacts: **the Artefact deck and the "Bauble" deck are one and the same** — model a single deck. The 5 designed Artefacts (Medical Machine, Psychic Control Belt, Snooperbot 6000, Sunstone Fragments, The Jam Gobbar) populate it; the Ancient Artifact environment draws from this same deck.
-   - Environment tokens (6 room + 8 corridor), Function tokens (4), Leaders (the **4 designed only** — Stormfoot, The Rat's Eye, Lady Seraph, Siyana; the other 3 are deferred).
+   - Environment tokens (6 room + 8 corridor), Function tokens (4), Leaders (**all 5** — Stormfoot, The Rat's Eye, Lady Seraph, Siyana, Lil' Minerva).
 6. **Define the EventBus autoload** as a stateless signal hub: `unit_moved`, `combat_resolved`, `phase_changed`, `guardian_spawned`, `old_tech_captured`, `token_flipped`, `control_changed`, `turn_passed`. Nothing in it but signal declarations.
 
 **Section A is done when:** every game noun exists as a `.tres` you can inspect, and the project opens clean with autoloads registered. ✅ Met.
@@ -140,6 +140,55 @@ Each section lists concrete steps. Code-level detail (node structures, resource 
 **Section B is done when:** GUT tests prove a board can be built, tokens seeded, bags drawn deterministically from a seed, and legal placements/movements computed — all with no scene loaded.
 
 ### Section C — Combat resolver
+
+> ## ✅ SECTION C COMPLETE (2026-06-09) — Milestone M3 reached
+>
+> **`logic/combat_resolver.gd`** implements the full pipeline:
+> declare → roll → assign → apply → check-deaths, **simultaneous** (all hits
+> computed before any unit is removed), with **cascading crits as a bounded
+> `while` loop** that emits one discrete `die` event per roll so the UI
+> (Section G) can replay the chain. The resolver is **pure** (no GameState /
+> EventBus coupling) and returns a replayable event log; the caller emits
+> `EventBus.combat_resolved(event_log)`.
+>
+> **All exceptions are flag-driven** via `_flag()` / `_num()` querying the
+> unit/guardian Resource — zero hardcoded unit names: Berserker/Cutter
+> `crit_on=5`, Typhoon/Infiltrator `hit_only_on=6`, Razor `applies_hits_first`
+> (resolved in a **pre-combat sub-round** so his kills pre-empt the main round),
+> Scrape `extra_attack_rounds` (the **whole combat runs 2 full simultaneous
+> rounds**), The Ox `attack_dice=2`, Blackout `reduces_attack` (−1 die to **each**
+> side), Sapperteur Sticky Bomb (**pre-combat** sub-round vs the entering side).
+>
+> **Decisions locked this session (Corin):** Razor = pre-combat sub-round;
+> default hit-assignment policy = **minimise losses** (stack onto the unit
+> closest to dying); Scrape = **entire combat runs 2 rounds**.
+>
+> **Damage persistence + defense:** damage tokens live on the unit dict and
+> persist across combats (heal at Cleanup, Section D). Death is checked against
+> **effective Defense** = base + controlled-ground/buff bonus, stamped onto
+> defenders so targeting and death agree (this was a real bug, caught and fixed
+> in verification: without it a controlled unit died one hit early). The +1 for
+> controlling a space **DOES stack with a Shield Drone** (+1 each → +2 on a
+> controlled space defended by a drone); stacking buffs (Siyana) add on top via
+> `extra_defense`.
+>
+> **Schema additions:** `data/unit_data.gd` gained `attack_dice` (0 = use printed
+> Attack), `sticky_bomb_dice`, `grants_ground_defense` (Shield Drone). Guardian
+> schema already carried its flags.
+>
+> **Verification:** core math ported to Python and run over a **10,000-combat
+> seeded sim — zero crashes, bounded cascades, sane hit rate (~0.47; below 0.5
+> because hit-on-6 units pull the mean down).** **16 edge-case checks** + **17
+> forced-die-sequence checks** all green, each mirroring a GUT assertion exactly.
+> GUT suite: **`tests/test_combat_resolver.gd`** (per-special-unit + per-Guardian
+> isolation tests via a scriptable `forced_faces` die seam, defensive-interaction
+> tests, bounded-cascade test, 10k-combat sim). Godot is NOT runnable in the
+> sandbox — Corin runs GUT locally
+> (`& "<exe>" --headless -s addons/gut/gut_cmdln.gd -gdir=res://tests -gexit`,
+> running `godot --headless --editor --quit` once first to register the new
+> `class_name CombatResolver`), then `git add -A && git commit && git push`.
+>
+> **Next = Section D (Rules engine: phases & actions).**
 
 **Goal:** A combat function that takes board state + participants and returns a result, correct for every special-unit and Guardian exception.
 
@@ -216,7 +265,7 @@ This is the hardest, highest-risk module. Build it as a strict pipeline, not an 
 
 **Steps:**
 
-1. **Import the existing art.** You already have card fronts/backs, unit/guardian/special tokens, hex tiles (Room/Corridor drafts + backs), Center Hex, environment/function tokens, Leader cards. Wire each `.tres` to its texture. Note draft/numbered duplicates (multiple ROOM HEX DRAFT, CORRIDOR HEX DRAFT) — pick finals (open question).
+1. **Import the existing art.** You already have card fronts/backs, unit/guardian/special tokens, hex tiles (Room/Corridor drafts + backs), Center Hex, environment/function tokens, Leader cards (all 5). Wire each `.tres` to its texture. The numbered ROOM/CORRIDOR HEX DRAFT files are the distinct tile faces of the deck (numbering is non-contiguous but nothing is missing), not duplicates to cull — the tile art set is complete.
 2. **Tweens early and everywhere:** token moves, card draws, dice. Even 0.2s tweens with `TRANS_CUBIC`/`EASE_OUT` are the difference between "spreadsheet" and "game."
 3. **Combat playback queue:** push the resolver's event log into a queue and play one tween at a time so cascading-crit chains are legible (this is *why* C emits discrete events). Offer a speed/skip toggle.
 4. **Theme once, reuse everywhere:** a Godot `Theme` resource for fonts, colors, button styles; build with `Container` nodes (`PanelContainer`, `HBox/VBox`, `MarginContainer`), not manual positioning.
@@ -262,7 +311,7 @@ This is the hardest, highest-risk module. Build it as a strict pipeline, not an 
 
 **Steps:**
 
-1. **Design the 3 missing Leaders** (candidates from fiction: The Samadhi, Lil' Minerva, + one more) — author as `LeaderData` `.tres` with `passive_effect_id`; the engine already supports them.
+1. **Leaders — DONE.** All 5 Leaders are authored as `LeaderData` `.tres` (the game has 5 total, not 7). Section J just needs each `passive_effect_id` wired into the engine: stormfoot_move, ratseye_range, seraph_recruit, siyana_defense, minerva_card_advantage.
 2. **Document & implement 2P and 4P** ring sizes and Rally Zone positions (you flagged these need layout screenshots). Until then, ship 3P and gate 2P/4P behind "coming soon."
 3. **Write FAQ / in-game tutorial / onboarding** — the guide stresses a "foolproof guidance system." A short interactive tutorial doubles as onboarding.
 4. **Confirm component counts** (e.g. Damage tokens) from playtest data — in digital they're unbounded, but the UI should still read clearly at high counts.
@@ -328,7 +377,7 @@ Drawn from your guide's Wasteland-Warriors-specific warnings plus general adapta
 **Scope**
 
 - **Online multiplayer creep.** Explicitly out of v1. Your deterministic, command-based engine makes it *addable later* (sync inputs, not state) — but only once the engine is rock-solid. Don't start it now.
-- **Chasing missing content before the engine exists.** The 3 Leaders and 2P/4P layouts are data slots. Don't let "finish the design" block "build the engine."
+- **Chasing missing content before the engine exists.** 2P/4P layouts are data slots. Don't let "finish the design" block "build the engine." (Leaders are all 5 done.)
 - **Polishing un-fun loops.** If the greybox turn isn't satisfying, art won't save it. Prove fun at M5–M6 before the art pass.
 
 ---
@@ -339,7 +388,7 @@ These were the open questions; all are now settled and folded into the plan abov
 
 1. **Missing Action cards** — **Deferred.** Author only finalized cards; leave `effect_id` slots for the rest.
 2. **Missing tiles** — **Deferred.** Build with the finalized tile set; the data-driven design absorbs additions later.
-3. **Missing Leaders** — **Deferred.** Ship the 4 designed Leaders; the other 3 are later data slots.
+3. **Leaders** — **All 5 done** (the game has 5 total, not 7). No longer a gap.
 4. **AI difficulty** — **One medium tier** for v1, weights in a Resource so more tiers are a future no-code addition.
 5. **Empty seats** — **AI-filled by default**, with a per-seat human/AI toggle on the setup screen for hotseat.
 6. **Artefacts vs Baubles** — **Same deck.** Modeled as one; the Ancient Artifact environment draws from it.

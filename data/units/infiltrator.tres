@@ -6,8 +6,8 @@
 script = ExtResource("1")
 id = &"infiltrator"
 display_name = "Infiltrator"
-move = 1
-attack = 1
+move = 2
+attack = 0
 defense = 1
 range = 1
 crit_on = 6

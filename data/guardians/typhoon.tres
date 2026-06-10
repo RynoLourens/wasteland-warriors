@@ -6,11 +6,11 @@
 script = ExtResource("1")
 id = &"typhoon"
 display_name = "Typhoon"
-move = 1
-attack = 1
-defense = 1
+move = 3
+attack = 3
+defense = 2
 range = 1
-attack_dice = 1
+attack_dice = 3
 crit_on = 6
 hit_only_on = 6
 attacks_on_move = false
