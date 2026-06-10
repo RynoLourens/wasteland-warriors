@@ -42,9 +42,17 @@ The build breaks into **ten sections (A–J)**. They are ordered so each one res
 
 Each section lists concrete steps. Code-level detail (node structures, resource fields, test targets) is included alongside the higher-level "what and why," per the request for both.
 
-### Section A — Project skeleton & data layer
+### Section A — Project skeleton & data layer ✅ COMPLETE (2026-06-09)
 
 **Goal:** A clean Godot project where all game content lives in data files, not code.
+
+> **Status — DONE.** Godot 4.6 project scaffolded and pushed to GitHub
+> (https://github.com/RynoLourens/wasteland-warriors). Folder layout, `EventBus` +
+> `GameState` autoloads, all 7 `Resource` schema scripts, GUT installed/enabled, and
+> **56 `.tres` instances** authored (8 units, 8 guardians, 4 leaders, 5 artefacts,
+> 18 env/function tokens, 13 action cards). Open items carried forward: confirm guardian/
+> special-unit base combat numbers and a few card types from the printed token art
+> (tracked in `SECTION-A-tres-checklist.md`); Action cards 08 & 12 deferred.
 
 **Steps:**
 
@@ -74,9 +82,43 @@ Each section lists concrete steps. Code-level detail (node structures, resource 
    - Environment tokens (6 room + 8 corridor), Function tokens (4), Leaders (the **4 designed only** — Stormfoot, The Rat's Eye, Lady Seraph, Siyana; the other 3 are deferred).
 6. **Define the EventBus autoload** as a stateless signal hub: `unit_moved`, `combat_resolved`, `phase_changed`, `guardian_spawned`, `old_tech_captured`, `token_flipped`, `control_changed`, `turn_passed`. Nothing in it but signal declarations.
 
-**Section A is done when:** every game noun exists as a `.tres` you can inspect, and the project opens clean with autoloads registered.
+**Section A is done when:** every game noun exists as a `.tres` you can inspect, and the project opens clean with autoloads registered. ✅ Met.
 
-### Section B — Core logic: GameState & board model
+### Section B — Core logic: GameState & board model ✅ COMPLETE (2026-06-09)
+
+> **DONE.** Built `logic/hex_coord.gd` (cube/axial: neighbours, distance, ring,
+> spiral), `logic/hex_cell.gd` (per-tile state: edges, units-by-owner, explicit
+> TokenState, env/func tokens, Old Tech), `logic/player.gd` (seeded
+> sample-without-replacement bag + Deploy/Recruit/Punish), `logic/hex_graph.gd`
+> (dynamic-edge reachability: doorways, enemy-block pass-through, Infiltrator,
+> Blink, Teleporter network, Tough Terrain stop), and `logic/map_generator.gd`
+> (`generate_map` + `is_legal_placement` + `seed_tokens` + 3P rally zones).
+> `autoload/game_state.gd` now composes them via `setup_match()`.
+>
+> **3P map design locked from Corin's layout screenshot:** the mandatory tile
+> positions ("green dots") snap exactly to **ring 1 (6) + ring 2 (12) = 18
+> positions**, matching the **18-tile budget** (3 players × [2 Rooms + 4
+> Corridors] = 6 Rooms + 12 Corridors). Inner ring completes before the next.
+> Rally zones on ring 3 (~120° apart): green (-3,0) TL, blue (3,-3) TR, red (0,3)
+> bottom. 2P/4P are documented stubs (`rally_zones()` returns empty + warns).
+>
+> **Generator approach (revised from the plan's "orient-and-hope + backtracking"):**
+> a naive orient-each-tile generator leaves islands ~56% of the time (verified).
+> Instead we model each shared boundary as ONE truth value (open for both tiles
+> at once), so rule 2 ("no Closing") is impossible to violate by construction,
+> then build a spanning tree outward from center (guaranteed connectivity) plus
+> random extra edges (loops) and dangling mouths (the open arms into the desert).
+>
+> **Verification:** the core algorithm was ported to Python and run over **20,000
+> seeds — every board is exactly 19 cells, fully connected, zero rule-2
+> violations, deterministic per seed.** GUT suite mirrors this: `tests/`
+> test_hex_coord, test_player_bag, test_map_generator (1,000-seed sweep +
+> determinism + token-seeding + legality), test_hex_graph (movement). All test
+> assertions were cross-checked against Python ports of the algorithms.
+>
+> **Milestone M2 reached.** Next = Section C (Combat resolver). Corin to run GUT
+> locally (`godot --headless -s addons/gut/gut_cmdln.gd -gdir=res://tests -gexit`)
+> and `git add -A && git commit && git push`.
 
 **Goal:** An authoritative, headless model of a game in progress. No scenes loaded.
 
