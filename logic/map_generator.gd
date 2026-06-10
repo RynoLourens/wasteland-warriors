@@ -122,11 +122,40 @@ static func generate_map(player_count: int, seed: int) -> Dictionary:
 				cell.set_exit(dir, dangle.get("%s:%d" % [p.key(), dir], false))
 		board[p.key()] = cell
 
+	# 5. FIXTURES: add the Rally Zone cells. Like the Central Chamber, a Rally Zone
+	# is a FIXTURE, not generated content — it sits at a constant position, is never
+	# drawn/oriented/validated against the placement rules, and always connects to
+	# whatever tile ends up beside it regardless of that tile's orientation. So the
+	# seeded builder above produces only the random 19-cell lattice (its original
+	# verified contract); the fixtures are laid down here as the constants they are.
+	var rz := rally_zones(player_count)
+	_place_rally_fixtures(board, rz)
+
 	return {
 		"board": board,
 		"center": center,
-		"rally_zones": rally_zones(player_count),
+		"rally_zones": rz,
 	}
+
+
+## Lay down the Rally Zone fixture cells and guarantee each one's single doorway
+## into the lattice. Each rally coord has EXACTLY ONE lattice neighbour in the 3P
+## layout (verified), so we open that one shared edge on both sides — that doorway
+## is the "arm" the player's forces march in through, and it holds no matter how
+## the adjacent lattice tile was oriented. Deterministic (no rng), so a seed still
+## reproduces the whole board exactly.
+static func _place_rally_fixtures(board: Dictionary, rz: Dictionary) -> void:
+	for color in rz.keys():
+		var rzcoord: HexCoord = rz[color]
+		var rzcell := HexCell.new(rzcoord, TileType.ROOM)
+		for dir in range(6):
+			var n: HexCoord = rzcoord.neighbor(dir)
+			if board.has(n.key()):
+				rzcell.set_exit(dir, true)
+				var ncell: HexCell = board[n.key()]
+				ncell.set_exit(HexCoord.opposite_dir(dir), true)
+				break   # exactly one lattice neighbour in 3P; stop at it
+		board[rzcoord.key()] = rzcell
 
 
 ## The fixed mandatory tile positions for a ring (3-player lattice).

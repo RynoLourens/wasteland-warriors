@@ -10,9 +10,17 @@ const TileType := HexCell.TileType
 const SEED_COUNT := 1000
 
 
-func test_board_size_is_center_plus_18() -> void:
+func test_board_size_is_lattice_19_plus_3_rally_fixtures() -> void:
+	# Two contracts: the random builder produces the 19-cell lattice (center + 18),
+	# and 3 Rally Zone FIXTURES are added on top -> 22 total board cells.
 	var map := MapGenerator.generate_map(3, 12345)
-	assert_eq(map.board.size(), 19, "1 center + 18 tiles")
+	assert_eq(map.board.size(), 22, "1 center + 18 lattice + 3 rally fixtures")
+	var center: HexCoord = map.center
+	var lattice := 0
+	for k in map.board.keys():
+		if center.distance_to(HexCoord.from_key(k)) <= 2:
+			lattice += 1
+	assert_eq(lattice, 19, "the seeded lattice is exactly 19 cells (center + 18)")
 
 
 func test_tile_budget_six_rooms_twelve_corridors() -> void:
@@ -26,24 +34,34 @@ func test_tile_budget_six_rooms_twelve_corridors() -> void:
 			TileType.CORRIDOR: corridors += 1
 			TileType.CENTER: centers += 1
 	assert_eq(centers, 1, "exactly one Central Chamber")
-	assert_eq(rooms, 6, "6 Rooms (2 per player x3)")
+	# 6 lattice Rooms (2/player) + 3 Rally Zone Rooms = 9.
+	assert_eq(rooms, 9, "6 lattice Rooms + 3 Rally Zone Rooms")
 	assert_eq(corridors, 12, "12 Corridors (4 per player x3)")
 
 
 func test_positions_are_the_mandatory_lattice() -> void:
-	# Every placed tile must sit on ring 1 or ring 2 (the green-dot lattice),
-	# plus the center; nothing off-lattice.
+	# Every placed tile must sit on rings 1-2 (the green-dot lattice) or be one of
+	# the 3 ring-3 Rally Zone cells, plus the center; nothing else off-lattice.
 	var map := MapGenerator.generate_map(3, 7)
 	var center: HexCoord = map.center
+	var rz := MapGenerator.rally_zones(3)
+	var rz_keys := {}
+	for color in rz.keys():
+		rz_keys[rz[color].key()] = true
 	for k in map.board.keys():
 		var c := HexCoord.from_key(k)
 		var d := center.distance_to(c)
-		assert_true(d <= 2, "tile %s within ring 2" % c)
+		assert_true(d <= 2 or rz_keys.has(k),
+			"tile %s within ring 2, or is a rally zone" % c)
 	# And all 18 mandatory positions are filled.
 	for radius in [1, 2]:
 		for pos in HexCoord.ring(center, radius):
 			assert_true(map.board.has(pos.key()),
 				"mandatory slot %s is filled" % pos)
+	# And all 3 rally-zone cells exist on the board.
+	for color in rz.keys():
+		assert_true(map.board.has(rz[color].key()),
+			"rally zone %s is a real board cell" % color)
 
 
 func test_every_board_is_fully_connected_and_legal() -> void:
@@ -53,7 +71,7 @@ func test_every_board_is_fully_connected_and_legal() -> void:
 	var failures := 0
 	for s in range(SEED_COUNT):
 		var map := MapGenerator.generate_map(3, s)
-		if map.board.size() != 19:
+		if map.board.size() != 22:
 			failures += 1
 			continue
 		if not MapGenerator.is_fully_connected(map.board, center):
