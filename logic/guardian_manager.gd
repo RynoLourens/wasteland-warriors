@@ -126,6 +126,14 @@ func _move_one_guardian(state, from_coord: HexCoord, unit: Dictionary) -> void:
 	var data = unit["data"]
 	var steps: int = data.move if data != null else 1
 	var cur: HexCoord = from_coord
+	# If the Guardian already SHARES its space with player Units, it fights there and
+	# does NOT move (you can't move out of a space holding enemies — same rule as
+	# players). The Ox's move-through is handled via moves_through_enemies.
+	var start_cell: HexCell = state.get_cell(cur)
+	var moves_through: bool = data != null and data.get("moves_through_enemies")
+	if start_cell != null and _has_player_units(start_cell) and not moves_through:
+		_guardian_attack(state, start_cell, cur)
+		return
 	for _i in range(steps):
 		var cell: HexCell = state.get_cell(cur)
 		# Guardian movement uses Blink-style adjacency only if it can pass walls.

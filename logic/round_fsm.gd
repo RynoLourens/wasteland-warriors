@@ -245,6 +245,14 @@ func _resolve_central_chamber_spawns() -> void:
 ##     ONLY force present (no enemy Units, no Guardians).
 ##   * Pass the First Player token clockwise.
 func run_cleanup() -> void:
+	# 0. Expire round-scoped card buffs (Defensive Stance / Extra Move / Move Through
+	#    Enemies) — they last "until the end of the round" (Piece 5b). Also clear any
+	#    unspent Extra Recruitment grants.
+	if state.has_method("clear_round_buffs"):
+		state.clear_round_buffs()
+	if state.has_method("clear_extra_recruitment"):
+		state.clear_extra_recruitment()
+
 	# 1. Recompute Control from scratch each round: clear last round's first.
 	for p in state.players:
 		p.control_set.clear()

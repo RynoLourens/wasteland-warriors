@@ -61,8 +61,9 @@ func test_blink_ignores_walls() -> void:
 
 func test_enemy_units_block_passthrough() -> void:
 	var board := _line_board(4)  # cells at (0,0),(1,0),(2,0),(3,0)
-	# Enemy at (2,0): the unit CAN reach (1,0) but the enemy blocks pass-through,
-	# so (2,0) and (3,0) beyond it stay unreachable by pure movement.
+	# Enemy at (2,0). Per the game rule: you MAY move INTO an enemy space as your
+	# final destination (that's an attack), but you may NOT move THROUGH it to a
+	# space beyond. So (1,0) and (2,0) are reachable, but (3,0) is blocked.
 	var enemy := HexCoord.new(2, 0)
 	board[enemy.key()].add_unit(&"red", {"data": null, "damage": 0})
 	var start := HexCoord.new(0, 0)
@@ -71,8 +72,8 @@ func test_enemy_units_block_passthrough() -> void:
 	for c in r:
 		keys[c.key()] = true
 	assert_true(keys.has(HexCoord.new(1, 0).key()), "(1,0) is reachable")
-	assert_false(keys.has(HexCoord.new(2, 0).key()), "(2,0) enemy cell not a movement dest")
-	assert_false(keys.has(HexCoord.new(3, 0).key()), "(3,0) blocked behind the enemy")
+	assert_true(keys.has(HexCoord.new(2, 0).key()), "(2,0) enemy cell IS a valid endpoint (attack into it)")
+	assert_false(keys.has(HexCoord.new(3, 0).key()), "(3,0) blocked behind the enemy (no pass-through)")
 
 
 func test_infiltrator_moves_through_enemies() -> void:

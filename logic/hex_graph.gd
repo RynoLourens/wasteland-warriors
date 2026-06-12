@@ -65,19 +65,20 @@ static func reachable(board: Dictionary, start: HexCoord, unit_abilities: Dictio
 				continue
 			var ncell: HexCell = board[n_key]
 
-			# Enemy-occupied tiles block pass-through. You may move INTO one only
-			# if it's your destination (handled by the activation/combat rules,
-			# not here) — for pure movement reachability, an enemy tile is a wall
-			# unless the unit can move through enemies.
+			# Enemy-occupied tiles: you MAY move INTO one as your final destination
+			# (that's an attack — both forces then share the space and combat
+			# resolves), but you may NOT move THROUGH one to reach spaces beyond it,
+			# unless the unit can move through enemies (Infiltrator). So an enemy
+			# cell is a valid ENDPOINT (added to the result) but is NOT expanded.
 			var enemy_here: bool = ncell.has_enemy_units(owner)
-			if enemy_here and not through_enemies:
-				continue
 
 			var new_steps := steps_here + 1
 			if not best.has(n_key) or new_steps < best[n_key]:
 				best[n_key] = new_steps
 				result.append(n)
-				if new_steps < move_budget:
+				# Only expand further from a cell that is passable: empty/friendly,
+				# or the unit ignores enemies. Enemy endpoints stop the path here.
+				if new_steps < move_budget and (through_enemies or not enemy_here):
 					frontier.append(n)
 
 	# Dedupe (a hex can be appended via two paths before best[] settles).

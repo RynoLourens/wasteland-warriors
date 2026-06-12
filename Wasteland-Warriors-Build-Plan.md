@@ -225,6 +225,8 @@ This is the hardest, highest-risk module. Build it as a strict pipeline, not an 
 
 ### Section E — Greybox board & interaction
 
+> ✅ **COMPLETE (2026-06-10).** `scenes/BoardView.tscn` + `ui/board_view.gd` (set as main scene). Board auto-generates and animates in ring-by-ring (skippable); full click-driven Move-and-Attack works end to end on real Godot — activate a space, legal-move highlighting, pull units in, combat resolves correctly (verified live: warrior-vs-warrior single round). Logic stays authoritative throughout (input→ActionResolver→EventBus→redraw). One real engine bug surfaced and fixed: `HexGraph.reachable` now allows an enemy cell as a valid move ENDPOINT (attack into it) while still blocking pass-through, per the locked rule "move into an enemy space only as your final destination." GUT green. Test scaffolding (combat seed, debug prints) stripped. **Deferred to Section F: sidebar unit-selection UI (list across multiple source spaces, hover-to-highlight, ×N stacking for dense cells); ranged-unit attacks; larger touch targets.**
+
 **Goal:** See and click the board, with grey shapes, wired correctly to the proven logic.
 
 **Steps:**

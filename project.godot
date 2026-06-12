@@ -16,6 +16,7 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 config/name="Wasteland Warriors"
 config/description="Digital adaptation of the Wasteland Warriors board game."
+run/main_scene="res://scenes/SetupScreen.tscn"
 config/features=PackedStringArray("4.6", "Mobile")
 config/icon="res://icon.svg"
 
@@ -23,6 +24,7 @@ config/icon="res://icon.svg"
 
 EventBus="*res://autoload/event_bus.gd"
 GameState="*res://autoload/game_state.gd"
+GameController="*res://logic/game_controller.gd"
 
 [display]
 

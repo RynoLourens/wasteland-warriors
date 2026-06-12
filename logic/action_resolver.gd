@@ -58,8 +58,11 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 		if not _unit_in_cell(from_cell, color, unit):
 			return _fail("unit not present in source space")
 		# Reachability: destination must be within this unit's Move from the source.
+		# Use the STATE's reachable_for so round-scoped card buffs (Extra Move, Move
+		# Through Enemies) are honoured — the same query the UI highlights with, so
+		# "lit up but rejected" can't happen.
 		if not from_coord.equals(activate):
-			if not _reachable(state.board, from_coord, activate, color, unit):
+			if not _reachable_via_state(state, from_coord, activate, color, unit):
 				return _fail("destination out of range for a unit")
 		plan.append({"from_cell": from_cell, "unit": unit, "source_coord": from_coord})
 
@@ -87,9 +90,11 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 	_resolve_environment_on_arrival(state, dest)
 
 	# --- 4. Attack: if enemies / Guardians are now sharing the space, fight. ---
+	# The entering player may have declared combat cards (Re-roll / Cancel / Extra
+	# Attack) for this fight; pass them through to the resolver context.
 	var combat_log: Array = []
 	if _has_other_forces(dest, color):
-		combat_log = _resolve_combat(state, dest, color)
+		combat_log = _resolve_combat(state, dest, color, intent.get("combat_cards", {}))
 
 	# --- 4b. Rally Zone / Central Chamber side effects after the dust settles. ---
 	_after_move_effects(state, color, dest)
@@ -102,7 +107,9 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 # ---------------------------------------------------------------------------
 
 ## Build the CombatResolver context from everyone present in `cell` and run it.
-static func _resolve_combat(state, cell: HexCell, entering_side: StringName) -> Array:
+## `combat_cards` (optional) = { "extra_combat_rounds": int, "cancelled_rounds": int,
+##   "reroll_misses": { side -> int } } declared by the entering player's cards.
+static func _resolve_combat(state, cell: HexCell, entering_side: StringName, combat_cards: Dictionary = {}) -> Array:
 	var sides: Array = []
 	var units_by_owner: Dictionary = {}
 	for owner in cell.units.keys():
@@ -122,14 +129,28 @@ static func _resolve_combat(state, cell: HexCell, entering_side: StringName) -> 
 			controller = owner
 			break
 
+	# Round-scoped Defensive Stance (+1 def to a player's units this round) flows in
+	# as the resolver's stacking extra_defense, keyed by side.
+	var extra_def := {}
+	for owner in sides:
+		if state.has_method("extra_defense_for"):
+			var bonus: int = state.extra_defense_for(owner)
+			if bonus != 0:
+				extra_def[owner] = bonus
+
 	var resolver := CombatResolver.new()
 	var ctx := {
 		"sides": sides,
 		"combatants": combatants,
 		"controller": controller,
-		"extra_defense": {},
+		"extra_defense": extra_def,
 		"entering_side": entering_side,
 		"rng": state.rng,
+		# Section F combat-card modifiers (default 0/{} so non-card combats are
+		# identical to before).
+		"extra_combat_rounds": int(combat_cards.get("extra_combat_rounds", 0)),
+		"cancelled_rounds": int(combat_cards.get("cancelled_rounds", 0)),
+		"reroll_misses": combat_cards.get("reroll_misses", {}),
 	}
 	var log: Array = resolver.resolve(ctx)
 
@@ -173,6 +194,19 @@ static func _prune_dead(cell: HexCell) -> void:
 # ---------------------------------------------------------------------------
 #  Movement helpers
 # ---------------------------------------------------------------------------
+
+## Reachability that honours round buffs by going through GameState.reachable_for
+## (which folds in Extra Move / Move Through Enemies). Falls back to a raw board
+## query if `state` lacks the method (pure headless tests with a bare board).
+static func _reachable_via_state(state, from_coord: HexCoord, dest: HexCoord, owner: StringName, unit) -> bool:
+	var data = unit.get("data")
+	if state != null and state.has_method("reachable_for"):
+		for c in state.reachable_for(owner, from_coord, data):
+			if c is HexCoord and c.equals(dest):
+				return true
+		return false
+	return _reachable(state.board, from_coord, dest, owner, unit)
+
 
 static func _reachable(board: Dictionary, from_coord: HexCoord, dest: HexCoord, owner: StringName, unit) -> bool:
 	var data = unit.get("data")

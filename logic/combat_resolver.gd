@@ -48,6 +48,9 @@ const MAX_CASCADE := 100   ## safety cap so a pathological RNG can't infinite-lo
 ## exhausted we fall back to the rng, so partial scripting still works.
 var _rng: RandomNumberGenerator = null
 var _forced_faces: Array = []
+## Section F Re-roll card (action_10): per-side budget of MISSED dice that get one
+## re-roll. Populated from context["reroll_misses"] = { side -> count }.
+var _reroll_budget: Dictionary = {}
 
 
 ## The ONE place a d6 is produced. Forced faces (tests) drain first, then rng.
@@ -118,6 +121,7 @@ func resolve(context: Dictionary) -> Array:
 	assert(rng != null, "CombatResolver.resolve requires a seeded rng")
 	_rng = rng
 	_forced_faces = (context.get("forced_faces", []) as Array).duplicate()
+	_reroll_budget = (context.get("reroll_misses", {}) as Dictionary).duplicate()
 
 	var sides: Array = context.get("sides", [])
 	var combatants: Dictionary = context.get("combatants", {})
@@ -142,12 +146,74 @@ func resolve(context: Dictionary) -> Array:
 	# --- MAIN SIMULTANEOUS ROUND(S) ---
 	# Scrape's extra_attack_rounds makes the WHOLE combat run additional full
 	# simultaneous rounds (1 base + max extra_attack_rounds among live units).
-	var total_rounds := 1 + _max_extra_rounds(sides, combatants)
+	# Section F card hooks (passed in via context, default 0 so headless tests are
+	# unaffected): Extra Attack (action_15) adds rounds; Cancel Attack (action_14)
+	# removes them (clamped at 0).
+	var card_extra: int = int(context.get("extra_combat_rounds", 0))
+	var card_cancel: int = int(context.get("cancelled_rounds", 0))
+	var total_rounds: int = 1 + _max_extra_rounds(sides, combatants) + card_extra - card_cancel
+	total_rounds = int(max(total_rounds, 0))
 	for round_index in range(total_rounds):
 		if _live_side_count(sides, combatants) < 2:
 			break   # combat already decided; no one left to fight
 		_simultaneous_round(round_index, sides, combatants, controller,
 			extra_defense, assign_policy, rng, log)
+
+	log.append({"event": "combat_end", "survivors": _survivor_summary(sides, combatants)})
+	return log
+
+
+## INTERACTIVE per-round variant (Fix H). Same combat, but BEFORE each main round it
+## awaits `round_provider.call(round_index, sides_snapshot, combatants)` which returns
+## that round's card modifiers:
+##   { "extra_defense": {side->int},   # Defensive Stance this round (stacks)
+##     "reroll_misses": {side->int},   # Re-roll budget added this round
+##     "extra_rounds": int,            # Extra Attack adds rounds
+##     "cancel_round": bool }          # Cancel Attack skips THIS round
+## The headless resolve() is untouched, so all GUT tests keep passing; only the live
+## game uses this coroutine.
+func resolve_interactive(context: Dictionary, round_provider: Callable) -> Array:
+	var rng: RandomNumberGenerator = context.get("rng")
+	assert(rng != null, "resolve_interactive requires a seeded rng")
+	_rng = rng
+	_forced_faces = (context.get("forced_faces", []) as Array).duplicate()
+	_reroll_budget = (context.get("reroll_misses", {}) as Dictionary).duplicate()
+
+	var sides: Array = context.get("sides", [])
+	var combatants: Dictionary = context.get("combatants", {})
+	var controller: StringName = context.get("controller", &"")
+	var extra_defense: Dictionary = (context.get("extra_defense", {}) as Dictionary).duplicate()
+	var entering_side: StringName = context.get("entering_side", &"")
+	var assign_policy: Callable = context.get("assign_policy", Callable())
+
+	var log: Array = []
+	log.append({"event": "combat_start", "sides": sides.duplicate()})
+
+	if entering_side != &"":
+		_sticky_bomb_subround(sides, combatants, entering_side, controller,
+			extra_defense, assign_policy, rng, log)
+	_hits_first_subround(sides, combatants, controller, extra_defense,
+		assign_policy, rng, log)
+
+	var total_rounds: int = 1 + _max_extra_rounds(sides, combatants)
+	var round_index := 0
+	while round_index < total_rounds:
+		if _live_side_count(sides, combatants) < 2:
+			break
+		var mods = await round_provider.call(round_index, sides.duplicate(), combatants)
+		if mods is Dictionary:
+			for s in (mods.get("extra_defense", {}) as Dictionary).keys():
+				extra_defense[s] = int(extra_defense.get(s, 0)) + int(mods["extra_defense"][s])
+			for s in (mods.get("reroll_misses", {}) as Dictionary).keys():
+				_reroll_budget[s] = int(_reroll_budget.get(s, 0)) + int(mods["reroll_misses"][s])
+			total_rounds += int(mods.get("extra_rounds", 0))
+			if mods.get("cancel_round", false):
+				log.append({"event": "round_cancelled", "round": round_index})
+				round_index += 1
+				continue
+		_simultaneous_round(round_index, sides, combatants, controller,
+			extra_defense, assign_policy, rng, log)
+		round_index += 1
 
 	log.append({"event": "combat_end", "survivors": _survivor_summary(sides, combatants)})
 	return log
@@ -311,6 +377,14 @@ func _roll_dice(n: int, crit_face: int, hit_floor: int,
 		var face := _next_face()
 		var is_crit := face >= crit_face
 		var is_hit := face >= hit_floor
+		# Re-roll card (action_10): if this die MISSED and the side still has a
+		# re-roll in its budget, re-roll it once (the new face stands).
+		if not is_hit and int(_reroll_budget.get(side, 0)) > 0:
+			_reroll_budget[side] = int(_reroll_budget[side]) - 1
+			log.append({"event": "reroll", "side": side, "from": face})
+			face = _next_face()
+			is_crit = face >= crit_face
+			is_hit = face >= hit_floor
 		if is_hit:
 			hits += 1
 		if is_crit:

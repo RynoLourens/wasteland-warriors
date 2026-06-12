@@ -85,14 +85,19 @@ func add_unit(owner: StringName, unit) -> void:
 
 
 func remove_unit(owner: StringName, unit) -> bool:
+	# Remove the SPECIFIC unit instance by object identity (is_same), not Array.find,
+	# which matches by VALUE. Two identical Units (e.g. two Warriors) are dicts with
+	# equal contents, so find() would always remove the first one — corrupting which
+	# instance moves/dies when duplicates share a space. Callers always pass the exact
+	# dict they pulled from this cell, so identity is the correct match.
 	if units.has(owner):
 		var arr: Array = units[owner]
-		var idx := arr.find(unit)
-		if idx != -1:
-			arr.remove_at(idx)
-			if arr.is_empty():
-				units.erase(owner)
-			return true
+		for i in range(arr.size()):
+			if is_same(arr[i], unit):
+				arr.remove_at(i)
+				if arr.is_empty():
+					units.erase(owner)
+				return true
 	return false
 
 
