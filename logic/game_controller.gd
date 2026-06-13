@@ -24,6 +24,8 @@ extends Node
 signal match_started(turn_order)
 signal phase_changed(phase)              ## GameState.Phase value
 signal seat_turn_began(color, phase)     ## a seat is about to act (human or AI)
+signal seat_passed(color)                ## a seat passed (ended its Action phase)
+signal pass_state_reset()                ## new round (Recruitment) — clear passed markers
 signal recruitment_resolved(color, summary)
 signal action_resolved(color, result)    ## result dict from ActionResolver (has combat_log)
 signal round_completed(round_number)
@@ -40,6 +42,18 @@ var human_colors: Array = []             ## colors driven by a HumanAgent (for h
 var _fsm: RoundFSM                        ## internal: cleanup / guardian / victory mechanics
 var _running := false
 var winner: StringName = &""
+
+## The UI sets this (BoardView) to provide each combat ROUND's human card plays.
+## Signature: func(round_index:int, sides:Array, combatants:Dictionary, coord) -> Dictionary
+## returning { extra_defense, reroll_misses, extra_rounds, cancel_round }. If unset,
+## combat runs with no card input (the round_provider returns {}).
+var combat_round_provider: Callable = Callable()
+
+## The UI sets this (BoardView) to let a HUMAN defender choose which Unit absorbs a
+## hit. Signature: func(targets:Array, defender_side:StringName) -> Combatant (may
+## await a tap). Only called when the defender is human AND there are 2+ live targets.
+## If unset, the resolver uses its default minimise-losses policy.
+var combat_assign_provider: Callable = Callable()
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +127,7 @@ func _run_game() -> void:
 		_fsm.round_number += 1
 		await _recruitment_phase()
 		await _action_phase()
-		var v := _guardian_phase()             # victory check + spawn + cleanup
+		var v: StringName = await _guardian_phase()   # victory + spawn + (interactive) combat + cleanup
 		emit_signal("round_completed", _fsm.round_number)
 		if v != &"":
 			winner = v
@@ -130,6 +144,9 @@ func _run_game() -> void:
 func _recruitment_phase() -> void:
 	state.current_phase = Phase.RECRUITMENT
 	emit_signal("phase_changed", Phase.RECRUITMENT)
+	# A new round opens with Recruitment — clear last round's PASSED markers here so
+	# they're gone before anyone acts, not only when the Action phase starts.
+	emit_signal("pass_state_reset")
 	for color in _turn_order_from_first():
 		if not _running:
 			return
@@ -183,6 +200,7 @@ func _place_deployed_units(p, color: StringName, deployed: Array) -> void:
 func _action_phase() -> void:
 	state.current_phase = Phase.ACTION
 	emit_signal("phase_changed", Phase.ACTION)
+	emit_signal("pass_state_reset")
 	var passed := {}
 	var order := _turn_order_from_first()
 	var safety := 0
@@ -210,6 +228,7 @@ func _action_phase() -> void:
 					"pass":
 						passed[color] = true
 						turn_done = true
+						emit_signal("seat_passed", color)
 					"card":
 						var idx: int = intent.get("hand_index", -1)
 						var p = state.get_player(color)
@@ -217,21 +236,125 @@ func _action_phase() -> void:
 							p.hand.remove_at(idx)
 						turn_done = true
 					"move_attack":
-						var result: Dictionary = ActionResolver.resolve_move_attack(state, color, intent)
+						# Human seats defer combat so they can play a card each round;
+						# AI seats resolve inline. Either way, _do_move_attack handles it.
+						var as_human: bool = color in human_colors
+						var move_intent := intent.duplicate()
+						move_intent["defer_combat"] = as_human
+						var result: Dictionary = ActionResolver.resolve_move_attack(state, color, move_intent)
 						emit_signal("action_resolved", color, result)
+						if result.get("ok", false) and result.get("combat_pending", false):
+							await run_interactive_combat(result.get("combat_coord"), result.get("entering_side"))
+						# Central Chamber: the instant a player's Unit enters the centre,
+						# spawn 1 Guardian there (bag draw, may fizzle) and fight it now.
+						# From then on the breach flag makes the Guardian phase spawn 2.
+						if result.get("ok", false):
+							await _handle_center_entry(color, result.get("dest_coord"))
 						turn_done = result.get("ok", false)   # illegal -> re-ask
 					_:
 						passed[color] = true
 						turn_done = true
+						emit_signal("seat_passed", color)
 			if passed.size() >= order.size():
 				break
 
 
-# --- Phase 3: Guardian + Cleanup (delegate wholesale to the tested FSM) ---
+# ---------------------------------------------------------------------------
+#  Interactive per-round combat (Fix H)
+# ---------------------------------------------------------------------------
+
+## Run combat at `coord` interactively: the human(s) involved may play one ATTACK
+## card per round (Defensive Stance / Re-roll / Cancel / Extra Attack). Uses the
+## tested CombatResolver building blocks via ActionResolver; the per-round card
+## window is supplied by `combat_round_provider` (set by the UI). Awaits humans.
+func run_interactive_combat(coord, entering_side) -> void:
+	if coord == null:
+		return
+	var cell: HexCell = state.get_cell(coord)
+	if cell == null:
+		return
+	var ctx := ActionResolver.build_combat_context(state, cell, entering_side, {})
+	if ctx.is_empty():
+		return
+	var resolver := CombatResolver.new()
+	# Wrap the UI provider so the resolver only sees a (round_index, sides, combatants)
+	# Callable; we add `coord` and a safe default of {}.
+	var provider := func(round_index, sides, combatants):
+		if combat_round_provider.is_valid():
+			return await combat_round_provider.call(round_index, sides, combatants, coord)
+		return {}
+	# Async hit-assignment: only ask a HUMAN defender; AI/empty seats fall back to
+	# the resolver's default minimise-losses policy (returns null -> default used).
+	if combat_assign_provider.is_valid():
+		ctx["async_assign_policy"] = func(targets, defender_side):
+			if defender_side in human_colors:
+				return await combat_assign_provider.call(targets, defender_side)
+			return null
+	var log: Array = await resolver.resolve_interactive(ctx, provider)
+	ActionResolver.finish_combat(state, cell, log)
+
+
+## When a player's Unit enters the Central Chamber: spawn 1 Guardian there (bag draw,
+## may fizzle to Scrap), mark the centre BREACHED (so the Guardian phase spawns 2
+## from now on), and immediately fight the spawned Guardian if one appeared.
+func _handle_center_entry(color: StringName, dest_coord) -> void:
+	if dest_coord == null or state.center == null:
+		return
+	if not dest_coord.equals(state.center):
+		return
+	var center_cell: HexCell = state.get_cell(state.center)
+	if center_cell == null or center_cell.units_for(color).is_empty():
+		return
+	state.center_breached = true
+	var spawned: Array = _fsm.guardians.spawn_into_center(state, 1)
+	if not spawned.is_empty():
+		await run_interactive_combat(state.center, color)
+
+
+# --- Phase 3: Guardian + Cleanup ---
+## Mirrors RoundFSM.run_guardian_phase (victory -> spawn -> move -> cleanup) but
+## INTERLEAVES interactive per-round combat for any guardian-vs-player fights that
+## happened during movement, so a defending human can play Attack cards. The tested
+## FSM helpers (check_victory / spawns / cleanup) stay the source of truth.
 func _guardian_phase() -> StringName:
-	# RoundFSM.run_guardian_phase touches no agents, so we can call it directly and
-	# keep the tested guardian/cleanup/victory code as the single source of truth.
-	return _fsm.run_guardian_phase()
+	state.current_phase = Phase.GUARDIAN
+	_fsm._emit("phase_changed", [Phase.GUARDIAN])
+
+	# Step 1 — Victory check (before movement, exactly as the FSM does).
+	var v := _fsm.check_victory()
+	if v != &"":
+		return v
+
+	# Step 2 — Per-phase Central-Chamber spawn (the new rule): EVERY Guardian phase
+	# spawn 1 in the centre (bag draw, may fizzle), or 2 once the centre has ever
+	# been breached. If the spawn lands on a player's Units, fight immediately.
+	var spawn_count: int = 2 if state.center_breached else 1
+	var spawned: Array = _fsm.guardians.spawn_into_center(state, spawn_count)
+	if not spawned.is_empty():
+		var center_cell: HexCell = state.get_cell(state.center)
+		if center_cell != null and _center_has_player(center_cell):
+			await run_interactive_combat(state.center, GUARDIAN_OWNER)
+
+	# Step 3 — Move every Guardian (NO built-in spawn — we just did it), deferring
+	# their combats so a defending human can play a card each round.
+	_fsm.guardians.defer_combats = true
+	_fsm.guardians.pending_combats = []
+	_fsm.guardians.run_guardian_movement(state, false)
+	for pc in _fsm.guardians.pending_combats:
+		await run_interactive_combat(pc.get("coord"), GUARDIAN_OWNER)
+	_fsm.guardians.defer_combats = false
+	_fsm.guardians.pending_combats = []
+
+	# Step 4 — Cleanup.
+	_fsm.run_cleanup()
+	return &""
+
+
+func _center_has_player(center_cell: HexCell) -> bool:
+	for owner in center_cell.units.keys():
+		if owner != GUARDIAN_OWNER and not center_cell.units[owner].is_empty():
+			return true
+	return false
 
 
 # ---------------------------------------------------------------------------

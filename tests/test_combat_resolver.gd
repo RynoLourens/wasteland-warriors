@@ -339,3 +339,153 @@ func test_ten_thousand_combats_never_crash() -> void:
 	assert_gt(total_dice, 0, "dice were rolled across the sim")
 	var rate := float(total_hits) / float(total_dice)
 	assert_between(rate, 0.30, 0.60, "hit rate is sane (~0.5, lower with hit-on-6 units)")
+
+
+# ---------------------------------------------------------------------------
+#  Section F Fix H — interactive per-round resolve_interactive()
+# ---------------------------------------------------------------------------
+
+## A no-op round provider (always {}) makes resolve_interactive produce the SAME
+## outcome as the sync resolve() for the same seed — direct parity check (no
+## assumptions about which side gets which forced face).
+func test_interactive_noop_matches_plain() -> void:
+	# Sync baseline.
+	var sync_combatants := _combatants({&"a": [_unit(_u("warrior")), _unit(_u("warrior"))],
+		&"b": [_unit(_u("warrior")), _unit(_u("warrior"))]})
+	var sync_log := CombatResolver.new().resolve({
+		"sides": [&"a", &"b"], "combatants": sync_combatants, "controller": &"", "rng": _rng(7),
+	})
+	# Interactive with a no-op provider, identical seed + fresh combatants.
+	var int_combatants := _combatants({&"a": [_unit(_u("warrior")), _unit(_u("warrior"))],
+		&"b": [_unit(_u("warrior")), _unit(_u("warrior"))]})
+	var provider := func(_ri, _sides, _cmb): return {}
+	var int_log: Array = await CombatResolver.new().resolve_interactive({
+		"sides": [&"a", &"b"], "combatants": int_combatants, "controller": &"", "rng": _rng(7),
+	}, provider)
+	# Same survivor counts on both sides, and both end cleanly.
+	assert_eq(_events(int_log, "combat_end").size(), 1, "interactive combat ended")
+	assert_eq(_alive(int_combatants, &"a").size(), _alive(sync_combatants, &"a").size(),
+		"side a survivors match the sync resolver")
+	assert_eq(_alive(int_combatants, &"b").size(), _alive(sync_combatants, &"b").size(),
+		"side b survivors match the sync resolver")
+
+
+## Cancel-round on round 0 skips that round's rolls; with only 1 base round, no dice
+## are rolled and both sides survive.
+func test_interactive_cancel_round() -> void:
+	var resolver := CombatResolver.new()
+	var combatants := _combatants({&"a": [_unit(_u("warrior"))], &"b": [_unit(_u("warrior"))]})
+	var provider := func(ri, _sides, _cmb):
+		return {"cancel_round": true} if ri == 0 else {}
+	var log: Array = await resolver.resolve_interactive({
+		"sides": [&"a", &"b"],
+		"combatants": combatants,
+		"controller": &"",
+		"rng": _rng(1),
+		"forced_faces": [6, 6, 6, 6],
+	}, provider)
+	assert_eq(_events(log, "die").size(), 0, "cancelled round rolled no dice")
+	assert_eq(_alive(combatants, &"a").size(), 1, "a survives a cancelled fight")
+	assert_eq(_alive(combatants, &"b").size(), 1, "b survives a cancelled fight")
+
+
+## extra_rounds from the provider adds a full round.
+func test_interactive_extra_round() -> void:
+	var resolver := CombatResolver.new()
+	var combatants := _combatants({&"a": [_unit(_u("warrior"))], &"b": [_unit(_u("warrior"))]})
+	# Provider grants +1 round only on round 0 (so total = 2 base+extra, but both may
+	# end early). We just assert MORE than one round_start can occur.
+	var provider := func(ri, _sides, _cmb):
+		return {"extra_rounds": 1} if ri == 0 else {}
+	# All misses so nobody dies and both rounds actually run.
+	var log: Array = await resolver.resolve_interactive({
+		"sides": [&"a", &"b"],
+		"combatants": combatants,
+		"controller": &"",
+		"rng": _rng(1),
+		"forced_faces": [1, 1, 1, 1, 1, 1, 1, 1],
+	}, provider)
+	assert_eq(_events(log, "round_start").size(), 2, "extra_rounds added a second round")
+
+
+## Defensive Stance via extra_defense: a warrior (def 1) getting +1 def this round
+## survives a single hit it would otherwise have died to.
+func test_interactive_extra_defense_saves_unit() -> void:
+	var resolver := CombatResolver.new()
+	var combatants := _combatants({&"a": [_unit(_u("warrior"))], &"b": [_unit(_u("warrior"))]})
+	# Provider gives side b +1 defense on round 0. a rolls one hit (face 4), b misses.
+	var provider := func(ri, _sides, _cmb):
+		return {"extra_defense": {&"b": 1}} if ri == 0 else {}
+	var log: Array = await resolver.resolve_interactive({
+		"sides": [&"a", &"b"],
+		"combatants": combatants,
+		"controller": &"",
+		"rng": _rng(1),
+		"forced_faces": [4, 1],
+	}, provider)
+	assert_eq(_alive(combatants, &"b").size(), 1, "b's warrior survives with +1 defense (def 2 vs 1 hit)")
+
+
+# ---------------------------------------------------------------------------
+#  #6 — interactive hit ASSIGNMENT: a human defender picks which Unit absorbs a
+#  hit via async_assign_policy. We prove the policy OVERRIDES the default
+#  minimise-losses by forcing a choice the default would never make.
+# ---------------------------------------------------------------------------
+
+## Side b has a Warrior (def 1) + a Heavy (def 2). Attacker a scores exactly 2 hits.
+## DEFAULT policy stacks both on the Warrior (closest to dying) -> Warrior dies,
+## Heavy lives. Our async policy instead always picks the HEAVY, so the Heavy takes
+## both hits (= def 2) and dies while the Warrior survives — the opposite outcome,
+## which can only happen if the resolver consulted the async policy.
+func test_interactive_assign_policy_overrides_default() -> void:
+	var resolver := CombatResolver.new()
+	var combatants := _combatants({
+		&"a": [_unit(_u("warrior"))],
+		&"b": [_unit(_u("warrior")), _unit(_u("heavy"))],
+	})
+	var noop_provider := func(_ri, _sides, _cmb): return {}
+	# Always send the hit to the Heavy when it is among the offered targets.
+	var assign := func(targets, _side):
+		for c in targets:
+			if c.data.get("id") == &"heavy":
+				return c
+		return targets[0]
+	# a's 2 warrior dice = 4,4 (two hits, no crit). b's dice (warrior 2 + heavy 1) all
+	# miss as 1s so only a scores.
+	var log: Array = await resolver.resolve_interactive({
+		"sides": [&"a", &"b"],
+		"combatants": combatants,
+		"controller": &"",
+		"rng": _rng(1),
+		"forced_faces": [4, 4, 1, 1, 1],
+		"async_assign_policy": assign,
+	}, noop_provider)
+	assert_eq(_events(log, "combat_end").size(), 1, "interactive combat ended")
+	# Heavy (the player's pick) absorbed both hits and died; Warrior lives.
+	var b_live := _alive(combatants, &"b")
+	assert_eq(b_live.size(), 1, "exactly one b unit survives")
+	if b_live.size() == 1:
+		assert_eq(b_live[0].data.get("id"), &"warrior",
+			"the surviving b unit is the Warrior — the player sent both hits to the Heavy")
+
+
+## With only ONE live target, the async policy is NOT consulted (no needless prompt):
+## the lone unit just takes the hit. We assert the policy callback never fires.
+func test_interactive_assign_skips_when_single_target() -> void:
+	var resolver := CombatResolver.new()
+	var combatants := _combatants({&"a": [_unit(_u("warrior"))], &"b": [_unit(_u("warrior"))]})
+	var fired := [false]
+	var assign := func(targets, _side):
+		fired[0] = true
+		return targets[0]
+	var noop_provider := func(_ri, _sides, _cmb): return {}
+	# a scores one hit (face 4 then a miss), b misses — single target on b.
+	await resolver.resolve_interactive({
+		"sides": [&"a", &"b"],
+		"combatants": combatants,
+		"controller": &"",
+		"rng": _rng(1),
+		"forced_faces": [4, 1, 1, 1],
+		"async_assign_policy": assign,
+	}, noop_provider)
+	assert_false(fired[0], "policy not consulted when there is only one valid target")

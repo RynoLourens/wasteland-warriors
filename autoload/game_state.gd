@@ -73,6 +73,7 @@ func setup_match(player_specs: Array, seed: int) -> void:
 	# 4. Build + shuffle the shared Action-card deck (seeded, independent stream).
 	_build_action_deck(seed)
 
+	center_breached = false
 	current_phase = Phase.RECRUITMENT
 
 
@@ -241,6 +242,10 @@ func clear_round_buffs() -> void:
 # --- Extra Recruitment (action_09): grant one more recruitment decision this round.
 # Pending count per color; the recruitment flow drains it. Cleared each round. ---
 var _extra_recruitment: Dictionary = {}   # color -> int
+
+## True once ANY player has ever moved a Unit into the Central Chamber. After this,
+## the Guardian phase spawns 2 (not 1) per phase. Persists for the whole match.
+var center_breached: bool = false
 
 func grant_extra_recruitment(color: StringName) -> void:
 	_extra_recruitment[color] = int(_extra_recruitment.get(color, 0)) + 1

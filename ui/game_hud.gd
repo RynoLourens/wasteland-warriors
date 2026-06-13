@@ -42,10 +42,23 @@ var _pass_btn: Button
 var _tooltip: PanelContainer
 var _tooltip_label: Label
 
+# Phase tracker: a row of pills (Recruitment > Action > Guardian) under the banner;
+# the current phase is highlighted so players can see where the round is.
+var _phase_tracker: HBoxContainer
+var _phase_pills: Dictionary = {}   # phase int -> Label
+const PHASE_ORDER := [0, 1, 2]      # Recruitment, Action, Guardian
+
+# Passed strip: small chips showing which seats have passed this Action phase.
+var _passed_strip: HBoxContainer
+var _passed_chips: Dictionary = {}  # color StringName -> Label
+var _passed_set: Dictionary = {}    # color -> true
+
 
 func _ready() -> void:
 	layer = 10   # above the board (which is a plain Node2D on the default layer)
 	_build_banner()
+	_build_phase_tracker()
+	_build_passed_strip()
 	_build_action_bar()
 	_build_tooltip()
 	_build_cover()
@@ -121,6 +134,7 @@ func show_turn(color: StringName, phase: int) -> void:
 	var phase_name: String = PHASE_NAMES.get(phase, "—")
 	_banner_label.text = "%s  —  %s phase" % [str(color).to_upper(), phase_name]
 	_banner_label.add_theme_color_override("font_color", col)
+	_highlight_phase(phase)
 
 
 func set_phase(phase: int) -> void:
@@ -131,6 +145,118 @@ func set_phase(phase: int) -> void:
 	if phase == 2:   # GameState.Phase.GUARDIAN
 		_banner_label.text = "Guardian phase"
 		_banner_label.add_theme_color_override("font_color", Color(0.78, 0.70, 0.92))
+	_highlight_phase(phase)
+
+
+# ---------------------------------------------------------------------------
+#  Phase tracker (pill row under the banner)
+# ---------------------------------------------------------------------------
+
+func _build_phase_tracker() -> void:
+	_phase_tracker = HBoxContainer.new()
+	_phase_tracker.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_phase_tracker.position = Vector2(-220, 66)   # just under the 48-tall banner (banner ends ~58)
+	_phase_tracker.custom_minimum_size = Vector2(440, 0)
+	_phase_tracker.alignment = BoxContainer.ALIGNMENT_CENTER
+	_phase_tracker.add_theme_constant_override("separation", 8)
+	_phase_tracker.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for i in range(PHASE_ORDER.size()):
+		var phase: int = PHASE_ORDER[i]
+		var pill := _make_phase_pill(PHASE_NAMES.get(phase, "—"))
+		_phase_pills[phase] = pill
+		_phase_tracker.add_child(pill)
+		if i < PHASE_ORDER.size() - 1:
+			var arrow := Label.new()
+			arrow.text = "›"
+			arrow.add_theme_font_size_override("font_size", 16)
+			arrow.modulate = Color(1, 1, 1, 0.35)
+			arrow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			_phase_tracker.add_child(arrow)
+	add_child(_phase_tracker)
+
+
+func _make_phase_pill(text: String) -> Label:
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.add_theme_font_size_override("font_size", 13)
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.10, 0.11, 0.14, 0.75)
+	sb.set_corner_radius_all(10)
+	sb.content_margin_left = 10
+	sb.content_margin_right = 10
+	sb.content_margin_top = 3
+	sb.content_margin_bottom = 3
+	lbl.add_theme_stylebox_override("normal", sb)
+	lbl.modulate = Color(1, 1, 1, 0.45)
+	return lbl
+
+
+## Highlight the active phase pill; dim the rest.
+func _highlight_phase(phase: int) -> void:
+	for ph in _phase_pills.keys():
+		var lbl: Label = _phase_pills[ph]
+		var active: bool = (ph == phase)
+		lbl.modulate = Color(1, 1, 1, 1.0) if active else Color(1, 1, 1, 0.45)
+		var sb := lbl.get_theme_stylebox("normal") as StyleBoxFlat
+		if sb != null:
+			sb.bg_color = Color(0.20, 0.34, 0.52, 0.95) if active \
+				else Color(0.10, 0.11, 0.14, 0.75)
+
+
+# ---------------------------------------------------------------------------
+#  Passed-players strip
+# ---------------------------------------------------------------------------
+
+func _build_passed_strip() -> void:
+	_passed_strip = HBoxContainer.new()
+	# Top-right corner, clear of the centred banner/tracker.
+	_passed_strip.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_passed_strip.position = Vector2(-16, 16)
+	_passed_strip.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_passed_strip.alignment = BoxContainer.ALIGNMENT_END
+	_passed_strip.add_theme_constant_override("separation", 6)
+	_passed_strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_passed_strip)
+
+
+func _passed_chip(color: StringName) -> Label:
+	var lbl := Label.new()
+	lbl.text = "%s PASSED" % str(color).to_upper()
+	lbl.add_theme_font_size_override("font_size", 13)
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.08, 0.09, 0.12, 0.85)
+	sb.set_corner_radius_all(8)
+	sb.set_border_width_all(1)
+	sb.border_color = PLAYER_COLORS.get(color, Color.WHITE)
+	sb.content_margin_left = 8
+	sb.content_margin_right = 8
+	sb.content_margin_top = 3
+	sb.content_margin_bottom = 3
+	lbl.add_theme_stylebox_override("normal", sb)
+	lbl.add_theme_color_override("font_color", PLAYER_COLORS.get(color, Color.WHITE))
+	return lbl
+
+
+## Mark a seat as having passed this Action phase.
+func mark_passed(color: StringName) -> void:
+	if _passed_set.has(color):
+		return
+	_passed_set[color] = true
+	var chip := _passed_chip(color)
+	_passed_chips[color] = chip
+	_passed_strip.add_child(chip)
+
+
+## Clear all passed markers (new Action phase).
+func reset_passed() -> void:
+	_passed_set.clear()
+	for c in _passed_chips.keys():
+		var chip: Node = _passed_chips[c]
+		if is_instance_valid(chip):
+			chip.queue_free()
+	_passed_chips.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +277,7 @@ func _build_action_bar() -> void:
 	# direct HUD child so its anchors are SCREEN-relative (not the bottom bar's).
 	var hint_panel := PanelContainer.new()
 	hint_panel.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	hint_panel.position = Vector2(-360, 64)
+	hint_panel.position = Vector2(-360, 104)   # below the phase tracker (which sits at y=64)
 	hint_panel.custom_minimum_size = Vector2(720, 0)
 	hint_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var hsb := StyleBoxFlat.new()
@@ -261,11 +387,16 @@ func is_handoff_up() -> bool:
 
 ## Raise the cover for the named human seat. The banner is hidden behind it; the
 ## board is fully obscured so no hidden info leaks across the pass.
-func show_handoff(color: StringName) -> void:
+func show_handoff(color: StringName, phase: int = -1) -> void:
 	_pending_handoff_color = color
 	var col: Color = PLAYER_COLORS.get(color, Color.WHITE)
 	_cover_label.text = "%s's turn" % str(color).to_upper()
 	_cover_label.add_theme_color_override("font_color", col)
+	var phase_name: String = PHASE_NAMES.get(phase, "")
+	if phase_name != "":
+		_cover_sub.text = "%s Phase — hand the phone over, then tap Ready." % phase_name
+	else:
+		_cover_sub.text = "Hand the phone to this player, then tap Ready."
 	_cover.visible = true
 
 

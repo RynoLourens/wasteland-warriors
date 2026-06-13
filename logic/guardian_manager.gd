@@ -26,6 +26,13 @@ const SCRAP := &"scrap"
 var bag: Array = []
 var rng := RandomNumberGenerator.new()
 
+## Fix H: when true, guardian-vs-player combats are NOT resolved inline. The cells
+## where a guardian made contact are collected in `pending_combats` (Array of
+## {coord}) for the caller (GameController) to run INTERACTIVELY. Default false keeps
+## the sync (GUT-tested) behaviour: combat resolves inline as before.
+var defer_combats: bool = false
+var pending_combats: Array = []
+
 
 ## Build the bag from the 8 Guardian resources + 4 Scrap. `guardian_pool` is an
 ## Array of GuardianData (the .tres). Headless rules tests may pass a small pool;
@@ -101,8 +108,11 @@ func on_guardian_death(state, guardian_unit: Dictionary, coord: HexCoord) -> voi
 ##   * Then move EVERY Guardian: roll one die per green Move, one die at a time,
 ##     each die picks a direction; if it moves into a space with Units it Attacks
 ##     them and STOPS.
-func run_guardian_movement(state) -> void:
-	if _anyone_reached_center(state):
+## `do_spawn` controls the built-in per-phase spawn. The interactive controller does
+## its own spawn (1, or 2 once the centre is breached — the new rule) and passes
+## false; the headless FSM keeps the original spawn-if-anyone-reached behaviour.
+func run_guardian_movement(state, do_spawn: bool = true) -> void:
+	if do_spawn and _anyone_reached_center(state):
 		spawn_into_center(state, 1)
 	for entry in _all_guardian_locations(state):
 		_move_one_guardian(state, entry["coord"], entry["unit"])
@@ -205,6 +215,12 @@ func _guardian_attack(state, cell: HexCell, coord: HexCoord) -> void:
 		sides.append(owner)
 		units_by_owner[owner] = cell.units[owner]
 	if sides.size() < 2:
+		return
+	# Fix H: hand the fight to the caller for interactive per-round resolution. The
+	# guardian still STOPPED here (movement already ended on contact); only the
+	# resolution is deferred, so behaviour is otherwise unchanged.
+	if defer_combats:
+		pending_combats.append({"coord": coord})
 		return
 	var combatants := CombatResolver.combatants_from_units(units_by_owner)
 	var resolver := CombatResolver.new()

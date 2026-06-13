@@ -107,7 +107,7 @@ func _format_event(ev) -> Variant:
 			var sides: Array = ev.get("sides", [])
 			return _line("⚔  Combat: %s" % " vs ".join(_names(sides)), Color(1, 0.9, 0.5))
 		"round_start":
-			return _line("— Round %d —" % int(ev.get("round", 0)), Color(0.8, 0.85, 1.0))
+			return _line("— Round %d —" % (int(ev.get("round", 0)) + 1), Color(0.8, 0.85, 1.0))
 		"sticky_bomb":
 			return _line("  Sticky Bomb vs %s (%d dice)" % [_name(ev.get("side")), int(ev.get("dice", 0))], Color(0.95, 0.7, 0.4))
 		"hits_first":
@@ -121,7 +121,12 @@ func _format_event(ev) -> Variant:
 				mark = "  ● hit"
 			else:
 				mark = "  ○ miss"
-			return _line("    %s rolls %d%s" % [_name(ev.get("side")), face, mark],
+			# Name the rolling unit when known (e.g. "Blue Warrior rolls 5"), else side.
+			var roller := _name(ev.get("side"))
+			var uid = ev.get("unit", &"")
+			if uid != null and str(uid) != "":
+				roller = "%s %s" % [_name(ev.get("side")), _unit_name(uid)]
+			return _line("    %s rolls %d%s" % [roller, face, mark],
 				Color(0.85, 1.0, 0.85) if ev.get("hit", false) else Color(0.7, 0.7, 0.72))
 		"reroll":
 			return _line("    ↻ %s re-rolls a miss (was %d)" % [_name(ev.get("side")), int(ev.get("from", 0))], Color(0.75, 0.85, 1.0))

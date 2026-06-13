@@ -90,26 +90,35 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 	_resolve_environment_on_arrival(state, dest)
 
 	# --- 4. Attack: if enemies / Guardians are now sharing the space, fight. ---
-	# The entering player may have declared combat cards (Re-roll / Cancel / Extra
-	# Attack) for this fight; pass them through to the resolver context.
+	# When intent.defer_combat is set (live game with a human who may play cards each
+	# round), DON'T resolve here — return combat_pending so GameController runs the
+	# interactive per-round combat. Default (tests/AI) resolves synchronously inline.
+	var has_fight := _has_other_forces(dest, color)
+	if has_fight and intent.get("defer_combat", false):
+		_after_move_effects(state, color, dest)
+		return {"ok": true, "reason": "", "combat_log": [], "combat_pending": true,
+			"combat_coord": activate, "entering_side": color, "dest_coord": activate}
+
 	var combat_log: Array = []
-	if _has_other_forces(dest, color):
+	if has_fight:
 		combat_log = _resolve_combat(state, dest, color, intent.get("combat_cards", {}))
 
 	# --- 4b. Rally Zone / Central Chamber side effects after the dust settles. ---
 	_after_move_effects(state, color, dest)
 
-	return {"ok": true, "reason": "", "combat_log": combat_log}
+	return {"ok": true, "reason": "", "combat_log": combat_log, "dest_coord": activate}
 
 
 # ---------------------------------------------------------------------------
 #  Combat hand-off
 # ---------------------------------------------------------------------------
 
-## Build the CombatResolver context from everyone present in `cell` and run it.
-## `combat_cards` (optional) = { "extra_combat_rounds": int, "cancelled_rounds": int,
-##   "reroll_misses": { side -> int } } declared by the entering player's cards.
-static func _resolve_combat(state, cell: HexCell, entering_side: StringName, combat_cards: Dictionary = {}) -> Array:
+## Build the CombatResolver context from everyone present in `cell`. Returns {} if
+## fewer than two forces are present (no fight). `combat_cards` (optional) =
+## { "extra_combat_rounds": int, "cancelled_rounds": int, "reroll_misses": {side->int} }.
+## Shared by the sync (`_resolve_combat`) AND interactive (GameController) paths so the
+## combat setup is identical either way.
+static func build_combat_context(state, cell: HexCell, entering_side: StringName, combat_cards: Dictionary = {}) -> Dictionary:
 	var sides: Array = []
 	var units_by_owner: Dictionary = {}
 	for owner in cell.units.keys():
@@ -118,7 +127,7 @@ static func _resolve_combat(state, cell: HexCell, entering_side: StringName, com
 		sides.append(owner)
 		units_by_owner[owner] = cell.units[owner]
 	if sides.size() < 2:
-		return []
+		return {}
 
 	var combatants := CombatResolver.combatants_from_units(units_by_owner)
 
@@ -129,8 +138,7 @@ static func _resolve_combat(state, cell: HexCell, entering_side: StringName, com
 			controller = owner
 			break
 
-	# Round-scoped Defensive Stance (+1 def to a player's units this round) flows in
-	# as the resolver's stacking extra_defense, keyed by side.
+	# Round-scoped Defensive Stance (+1 def this round) flows in as stacking extra_def.
 	var extra_def := {}
 	for owner in sides:
 		if state.has_method("extra_defense_for"):
@@ -138,27 +146,35 @@ static func _resolve_combat(state, cell: HexCell, entering_side: StringName, com
 			if bonus != 0:
 				extra_def[owner] = bonus
 
-	var resolver := CombatResolver.new()
-	var ctx := {
+	return {
 		"sides": sides,
 		"combatants": combatants,
 		"controller": controller,
 		"extra_defense": extra_def,
 		"entering_side": entering_side,
 		"rng": state.rng,
-		# Section F combat-card modifiers (default 0/{} so non-card combats are
-		# identical to before).
 		"extra_combat_rounds": int(combat_cards.get("extra_combat_rounds", 0)),
 		"cancelled_rounds": int(combat_cards.get("cancelled_rounds", 0)),
 		"reroll_misses": combat_cards.get("reroll_misses", {}),
 	}
-	var log: Array = resolver.resolve(ctx)
 
-	# Apply deaths: the resolver mutated each combatant's live cell dict in place
-	# (damage persists on the dict), so prune any unit whose damage >= its
-	# effective defense out of the cell.
+
+## Prune dead units from `cell` and emit combat_resolved. Call after ANY combat
+## (sync or interactive) once the resolver has stamped damage onto the cell dicts.
+static func finish_combat(state, cell: HexCell, log: Array) -> void:
 	_prune_dead(cell)
 	_emit(state, "combat_resolved", [log])
+
+
+## Synchronous combat (headless/AI path; unchanged behaviour). Builds the context,
+## runs the sync resolver, prunes + emits. Interactive combat lives in GameController.
+static func _resolve_combat(state, cell: HexCell, entering_side: StringName, combat_cards: Dictionary = {}) -> Array:
+	var ctx := build_combat_context(state, cell, entering_side, combat_cards)
+	if ctx.is_empty():
+		return []
+	var resolver := CombatResolver.new()
+	var log: Array = resolver.resolve(ctx)
+	finish_combat(state, cell, log)
 	return log
 
 
@@ -253,11 +269,15 @@ static func _resolve_environment_on_arrival(state, cell: HexCell) -> void:
 #  Post-move effects (Central Chamber spawn handled by GuardianManager via FSM)
 # ---------------------------------------------------------------------------
 
-static func _after_move_effects(_state, _color: StringName, _cell: HexCell) -> void:
-	# Central-Chamber "stop here -> spawn 2 Guardians" is handled by the FSM/
-	# GuardianManager (it owns the Guardian bag). We only flag arrival; the FSM
-	# inspects board state in the Guardian phase. Nothing to mutate here yet.
-	pass
+static func _after_move_effects(state, color: StringName, cell: HexCell) -> void:
+	# Central-Chamber breach flag: once ANY player's Unit is on the centre, the
+	# Guardian phase spawns 2 (not 1) from then on. The live controller ALSO does an
+	# immediate centre-entry spawn; here we just set the persistent flag so BOTH the
+	# headless FSM and the live game agree on the breach state.
+	if state != null and "center" in state and state.center != null and "center_breached" in state:
+		if cell != null and cell.coord != null and cell.coord.equals(state.center):
+			if not cell.units_for(color).is_empty():
+				state.center_breached = true
 
 
 # ---------------------------------------------------------------------------

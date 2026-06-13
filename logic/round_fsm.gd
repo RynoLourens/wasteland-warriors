@@ -171,13 +171,13 @@ func run_guardian_phase() -> StringName:
 	if v != &"":
 		return v
 
-	# Central-Chamber "stop here with no Guardians -> spawn 2" resolves now, before
-	# regular Guardian movement (a unit that ended the Action phase alone on the
-	# Chamber wakes the place up).
-	_resolve_central_chamber_spawns()
+	# Central-Chamber spawn (the locked rule): EVERY Guardian phase spawn 1 in the
+	# centre (bag draw, may fizzle), or 2 once the centre has ever been breached.
+	var breached: bool = state.center_breached if "center_breached" in state else false
+	guardians.spawn_into_center(state, 2 if breached else 1)
 
-	# Step 2 — Spawn 1 (if anyone reached the Chamber) + move every Guardian.
-	guardians.run_guardian_movement(state)
+	# Step 2 — Move every Guardian (spawn already done above, so do_spawn=false).
+	guardians.run_guardian_movement(state, false)
 
 	# Step 3 — Cleanup.
 	run_cleanup()
@@ -218,20 +218,6 @@ func _old_tech_in_rally(p) -> int:
 	var cell: HexCell = state.get_cell(p.rally_zone)
 	return cell.old_tech if cell != null else 0
 
-
-## If any player's Units ended the Action phase standing in the Central Chamber
-## with NO Guardians present, that wakes 2 Guardians (rulebook Ch.11 [CHANGE]).
-func _resolve_central_chamber_spawns() -> void:
-	var center_cell: HexCell = state.get_cell(state.center)
-	if center_cell == null:
-		return
-	var has_guardian := not center_cell.units_for(GUARDIAN_OWNER).is_empty()
-	var has_player := false
-	for owner in center_cell.units.keys():
-		if owner != GUARDIAN_OWNER and not center_cell.units[owner].is_empty():
-			has_player = true
-	if has_player and not has_guardian:
-		guardians.spawn_into_center(state, 2)
 
 
 # ---------------------------------------------------------------------------

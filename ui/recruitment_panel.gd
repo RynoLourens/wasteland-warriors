@@ -107,7 +107,7 @@ func _build_ui() -> void:
 	mode_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	mode_lbl.add_theme_font_size_override("font_size", 18)
 	_mode_box.add_child(mode_lbl)
-	_mode_box.add_child(_big_button("3 REGULAR UNITS (Warriors)", _on_pick_regular))
+	_mode_box.add_child(_big_button("3 Units", _on_pick_regular))
 	_mode_box.add_child(_big_button("2 SPECIAL UNITS", _on_pick_special))
 	_mode_box.add_child(_big_button("BACK", _on_recruit_back))
 

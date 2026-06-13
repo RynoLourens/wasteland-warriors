@@ -48,8 +48,7 @@ const MAX_CASCADE := 100   ## safety cap so a pathological RNG can't infinite-lo
 ## exhausted we fall back to the rng, so partial scripting still works.
 var _rng: RandomNumberGenerator = null
 var _forced_faces: Array = []
-## Section F Re-roll card (action_10): per-side budget of MISSED dice that get one
-## re-roll. Populated from context["reroll_misses"] = { side -> count }.
+## Section F Re-roll card: per-side budget of MISSED dice that get one re-roll.
 var _reroll_budget: Dictionary = {}
 
 
@@ -146,9 +145,6 @@ func resolve(context: Dictionary) -> Array:
 	# --- MAIN SIMULTANEOUS ROUND(S) ---
 	# Scrape's extra_attack_rounds makes the WHOLE combat run additional full
 	# simultaneous rounds (1 base + max extra_attack_rounds among live units).
-	# Section F card hooks (passed in via context, default 0 so headless tests are
-	# unaffected): Extra Attack (action_15) adds rounds; Cancel Attack (action_14)
-	# removes them (clamped at 0).
 	var card_extra: int = int(context.get("extra_combat_rounds", 0))
 	var card_cancel: int = int(context.get("cancelled_rounds", 0))
 	var total_rounds: int = 1 + _max_extra_rounds(sides, combatants) + card_extra - card_cancel
@@ -163,15 +159,9 @@ func resolve(context: Dictionary) -> Array:
 	return log
 
 
-## INTERACTIVE per-round variant (Fix H). Same combat, but BEFORE each main round it
-## awaits `round_provider.call(round_index, sides_snapshot, combatants)` which returns
-## that round's card modifiers:
-##   { "extra_defense": {side->int},   # Defensive Stance this round (stacks)
-##     "reroll_misses": {side->int},   # Re-roll budget added this round
-##     "extra_rounds": int,            # Extra Attack adds rounds
-##     "cancel_round": bool }          # Cancel Attack skips THIS round
-## The headless resolve() is untouched, so all GUT tests keep passing; only the live
-## game uses this coroutine.
+## INTERACTIVE per-round variant (Fix H): awaits round_provider(round_index, sides,
+## combatants) before each main round for { extra_defense, reroll_misses, extra_rounds,
+## cancel_round }. The sync resolve() above is untouched so GUT stays green.
 func resolve_interactive(context: Dictionary, round_provider: Callable) -> Array:
 	var rng: RandomNumberGenerator = context.get("rng")
 	assert(rng != null, "resolve_interactive requires a seeded rng")
@@ -185,14 +175,19 @@ func resolve_interactive(context: Dictionary, round_provider: Callable) -> Array
 	var extra_defense: Dictionary = (context.get("extra_defense", {}) as Dictionary).duplicate()
 	var entering_side: StringName = context.get("entering_side", &"")
 	var assign_policy: Callable = context.get("assign_policy", Callable())
+	# Interactive-only: an ASYNC defender policy. When set, the defender (a human)
+	# is asked which live Unit takes each hit — but only when there is a real choice
+	# (2+ valid targets). Stored on the instance so the async assign helpers can
+	# reach it without changing every signature. The sync resolve() never sets this.
+	_async_assign_policy = context.get("async_assign_policy", Callable())
 
 	var log: Array = []
 	log.append({"event": "combat_start", "sides": sides.duplicate()})
 
 	if entering_side != &"":
-		_sticky_bomb_subround(sides, combatants, entering_side, controller,
+		await _sticky_bomb_subround_async(sides, combatants, entering_side, controller,
 			extra_defense, assign_policy, rng, log)
-	_hits_first_subround(sides, combatants, controller, extra_defense,
+	await _hits_first_subround_async(sides, combatants, controller, extra_defense,
 		assign_policy, rng, log)
 
 	var total_rounds: int = 1 + _max_extra_rounds(sides, combatants)
@@ -202,21 +197,156 @@ func resolve_interactive(context: Dictionary, round_provider: Callable) -> Array
 			break
 		var mods = await round_provider.call(round_index, sides.duplicate(), combatants)
 		if mods is Dictionary:
-			for s in (mods.get("extra_defense", {}) as Dictionary).keys():
-				extra_defense[s] = int(extra_defense.get(s, 0)) + int(mods["extra_defense"][s])
-			for s in (mods.get("reroll_misses", {}) as Dictionary).keys():
-				_reroll_budget[s] = int(_reroll_budget.get(s, 0)) + int(mods["reroll_misses"][s])
+			for sd in (mods.get("extra_defense", {}) as Dictionary).keys():
+				extra_defense[sd] = int(extra_defense.get(sd, 0)) + int(mods["extra_defense"][sd])
+			for sd in (mods.get("reroll_misses", {}) as Dictionary).keys():
+				_reroll_budget[sd] = int(_reroll_budget.get(sd, 0)) + int(mods["reroll_misses"][sd])
 			total_rounds += int(mods.get("extra_rounds", 0))
 			if mods.get("cancel_round", false):
 				log.append({"event": "round_cancelled", "round": round_index})
 				round_index += 1
 				continue
-		_simultaneous_round(round_index, sides, combatants, controller,
+		await _simultaneous_round_async(round_index, sides, combatants, controller,
 			extra_defense, assign_policy, rng, log)
 		round_index += 1
 
+	_async_assign_policy = Callable()
 	log.append({"event": "combat_end", "survivors": _survivor_summary(sides, combatants)})
 	return log
+
+
+# ---------------------------------------------------------------------------
+#  Interactive (async) round variants — used ONLY by resolve_interactive so the
+#  defender can be asked, per hit, which Unit absorbs it. These mirror the sync
+#  functions exactly except assignment goes through _assign_and_apply_async.
+# ---------------------------------------------------------------------------
+
+## The async defender policy (set per interactive combat). Receives (targets, side)
+## and returns a Combatant (or awaits a UI pick). Empty Callable -> use default.
+var _async_assign_policy: Callable = Callable()
+
+
+func _simultaneous_round_async(round_index: int, sides: Array, combatants: Dictionary,
+		controller: StringName, extra_defense: Dictionary,
+		assign_policy: Callable, rng: RandomNumberGenerator, log: Array) -> void:
+	log.append({"event": "round_start", "round": round_index})
+	var global_die_penalty := _global_attack_penalty(sides, combatants)
+	var hits_by_side: Dictionary = {}
+	for side in sides:
+		hits_by_side[side] = _roll_side(side, global_die_penalty,
+			combatants.get(side, []), rng, log)
+	for attacker_side in sides:
+		var hits: int = hits_by_side[attacker_side]
+		if hits <= 0:
+			continue
+		for defender_side in sides:
+			if defender_side == attacker_side:
+				continue
+			var share := _hits_share(hits, sides, attacker_side, defender_side)
+			if share <= 0:
+				continue
+			await _assign_and_apply_async(defender_side, share,
+				combatants.get(defender_side, []), controller, extra_defense,
+				assign_policy, log)
+	_check_deaths(sides, combatants, log)
+	log.append({"event": "round_end", "round": round_index})
+
+
+func _sticky_bomb_subround_async(sides: Array, combatants: Dictionary,
+		entering_side: StringName, controller: StringName,
+		extra_defense: Dictionary, assign_policy: Callable,
+		rng: RandomNumberGenerator, log: Array) -> void:
+	for side in sides:
+		if side == entering_side:
+			continue
+		for c in combatants.get(side, []):
+			if not c.alive:
+				continue
+			var bomb_dice: int = 0
+			if _flag(c.data, "places_sticky_bomb"):
+				bomb_dice = int(c.data.get("sticky_bomb_dice"))
+			if bomb_dice <= 0:
+				continue
+			log.append({"event": "sticky_bomb", "side": side, "dice": bomb_dice})
+			var hits := _roll_dice(bomb_dice, _crit_face(c.data), _hit_floor(c.data),
+				rng, log, "sticky_bomb", side, c.data.get("id"))
+			if hits > 0:
+				await _assign_and_apply_async(entering_side, hits,
+					combatants.get(entering_side, []), controller, extra_defense,
+					assign_policy, log)
+	_check_deaths(sides, combatants, log)
+
+
+func _hits_first_subround_async(sides: Array, combatants: Dictionary,
+		controller: StringName, extra_defense: Dictionary,
+		assign_policy: Callable, rng: RandomNumberGenerator, log: Array) -> void:
+	var any := false
+	for side in sides:
+		for c in combatants.get(side, []):
+			if not c.alive:
+				continue
+			if not _flag(c.data, "applies_hits_first"):
+				continue
+			any = true
+			var dice := _unit_dice(c.data)
+			log.append({"event": "hits_first", "side": side, "dice": dice})
+			var hits := _roll_dice(dice, _crit_face(c.data), _hit_floor(c.data),
+				rng, log, "hits_first", side, c.data.get("id"))
+			if hits > 0:
+				for defender_side in sides:
+					if defender_side == side:
+						continue
+					var share := _hits_share(hits, sides, side, defender_side)
+					if share > 0:
+						await _assign_and_apply_async(defender_side, share,
+							combatants.get(defender_side, []), controller,
+							extra_defense, assign_policy, log)
+	if any:
+		_check_deaths(sides, combatants, log)
+
+
+## Async assignment: identical to _assign_and_apply but each hit's target is chosen
+## via _choose_target_async, which may await a human pick (only when 2+ targets).
+func _assign_and_apply_async(defender_side: StringName, hits: int, side_units: Array,
+		controller: StringName, extra_defense: Dictionary,
+		assign_policy: Callable, log: Array) -> void:
+	var live: Array = []
+	for c in side_units:
+		if c.alive:
+			live.append(c)
+	if live.is_empty():
+		return
+	var ground_bonus := _ground_defense_bonus(defender_side, controller, live)
+	var stack_bonus := int(extra_defense.get(defender_side, 0))
+	var total_bonus := ground_bonus + stack_bonus
+	for c in live:
+		c.defense_bonus = total_bonus
+	for _h in range(hits):
+		var targets: Array = []
+		for c in live:
+			if c.alive and not c.is_dead():
+				targets.append(c)
+		if targets.is_empty():
+			break
+		var target: Combatant = await _choose_target_async(targets, defender_side, assign_policy)
+		target.add_damage(1)
+		log.append({
+			"event": "hit_assigned", "side": defender_side,
+			"unit": target.data.get("id"), "damage_total": target.damage(),
+			"effective_defense": target.defense(),
+		})
+
+
+## Choose a target for one hit, possibly awaiting a human pick. Order of precedence:
+##   1. If an async policy is set AND there are 2+ targets -> ask the human.
+##   2. Else fall back to the synchronous _choose_target (custom or minimise-losses).
+func _choose_target_async(targets: Array, defender_side: StringName,
+		assign_policy: Callable) -> Combatant:
+	if _async_assign_policy.is_valid() and targets.size() > 1:
+		var chosen = await _async_assign_policy.call(targets, defender_side)
+		if chosen != null and chosen is Combatant:
+			return chosen
+	return _choose_target(targets, defender_side, assign_policy)
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +412,7 @@ func _sticky_bomb_subround(sides: Array, combatants: Dictionary,
 				continue
 			log.append({"event": "sticky_bomb", "side": side, "dice": bomb_dice})
 			var hits := _roll_dice(bomb_dice, _crit_face(c.data), _hit_floor(c.data),
-				rng, log, "sticky_bomb", side)
+				rng, log, "sticky_bomb", side, c.data.get("id"))
 			if hits > 0:
 				_assign_and_apply(entering_side, hits,
 					combatants.get(entering_side, []), controller, extra_defense,
@@ -306,7 +436,7 @@ func _hits_first_subround(sides: Array, combatants: Dictionary,
 			var dice := _unit_dice(c.data)
 			log.append({"event": "hits_first", "side": side, "dice": dice})
 			var hits := _roll_dice(dice, _crit_face(c.data), _hit_floor(c.data),
-				rng, log, "hits_first", side)
+				rng, log, "hits_first", side, c.data.get("id"))
 			if hits > 0:
 				# Razor's hits go to every opposing side (split by policy).
 				for defender_side in sides:
@@ -352,7 +482,7 @@ func _roll_side(side: StringName, die_penalty: int, side_combatants: Array,
 		if n <= 0:
 			continue
 		total += _roll_dice(n, _crit_face(c.data), _hit_floor(c.data),
-			rng, log, "attack", side)
+			rng, log, "attack", side, c.data.get("id"))
 	return total
 
 
@@ -365,7 +495,7 @@ func _roll_side(side: StringName, die_penalty: int, side_combatants: Array,
 ## randomness seam for the whole resolver.
 func _roll_dice(n: int, crit_face: int, hit_floor: int,
 		rng: RandomNumberGenerator, log: Array, phase: String,
-		side: StringName) -> int:
+		side: StringName, unit_id: StringName = &"") -> int:
 	var hits := 0
 	var pending := n
 	var cascade_guard := 0
@@ -377,8 +507,6 @@ func _roll_dice(n: int, crit_face: int, hit_floor: int,
 		var face := _next_face()
 		var is_crit := face >= crit_face
 		var is_hit := face >= hit_floor
-		# Re-roll card (action_10): if this die MISSED and the side still has a
-		# re-roll in its budget, re-roll it once (the new face stands).
 		if not is_hit and int(_reroll_budget.get(side, 0)) > 0:
 			_reroll_budget[side] = int(_reroll_budget[side]) - 1
 			log.append({"event": "reroll", "side": side, "from": face})
@@ -390,7 +518,7 @@ func _roll_dice(n: int, crit_face: int, hit_floor: int,
 		if is_crit:
 			pending += 1   # cascade: a crit grants one more die
 		log.append({
-			"event": "die", "phase": phase, "side": side,
+			"event": "die", "phase": phase, "side": side, "unit": unit_id,
 			"face": face, "hit": is_hit, "crit": is_crit,
 		})
 	return hits
@@ -592,14 +720,13 @@ func _num(data, prop: String, default: int) -> int:
 	var v = data.get(prop)
 	return int(v) if v != null else default
 
-
 # ---------------------------------------------------------------------------
 #  Convenience builder for callers / tests
 # ---------------------------------------------------------------------------
 
-## Build the `combatants` map from a HexCell-style units dictionary
-## ({owner -> Array[{data,damage}]}). Each entry becomes a Combatant wrapping
-## the SAME dict, so damage written here persists on the cell (rule 6).
+## Build the combatants map { side -> Array[Combatant] } from a
+## { owner -> Array[{data, damage}] } map. STATIC so callers (ActionResolver,
+## GuardianManager, tests) build it without an instance.
 static func combatants_from_units(units_by_owner: Dictionary) -> Dictionary:
 	var out: Dictionary = {}
 	for owner in units_by_owner.keys():

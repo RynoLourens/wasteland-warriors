@@ -121,6 +121,12 @@ func _ready() -> void:
 	_win_screen = WinScreen.new()
 	add_child(_win_screen)
 
+	# Fix H: provide the per-round combat-card window to the controller.
+	if _controller_match_active():
+		GameController.combat_round_provider = _combat_round_provider
+		# Interactive hit assignment: human defenders choose which Unit takes a hit.
+		GameController.combat_assign_provider = _combat_assign_provider
+
 	# Section F: GameController (autoload) owns match setup + the round-loop
 	# coroutine. If a match is already running (started from the SetupScreen), just
 	# render it. Otherwise fall back to a standalone demo match so BoardView still
@@ -144,6 +150,8 @@ func _ready() -> void:
 		_human_count = GameController.human_colors.size()
 		GameController.phase_changed.connect(_on_phase_changed)
 		GameController.seat_turn_began.connect(_on_seat_turn_began)
+		GameController.seat_passed.connect(_on_seat_passed)
+		GameController.pass_state_reset.connect(_on_pass_state_reset)
 		GameController.action_resolved.connect(_on_action_resolved)
 		GameController.recruitment_resolved.connect(_on_recruitment_resolved)
 		GameController.round_completed.connect(_on_round_completed)
@@ -435,13 +443,23 @@ func _on_phase_changed(phase: int) -> void:
 var _pending_human_phase: int = -1        # phase the active human still owes an intent for
 
 
+func _on_seat_passed(color: StringName) -> void:
+	if _hud != null:
+		_hud.mark_passed(color)
+
+
+func _on_pass_state_reset() -> void:
+	if _hud != null:
+		_hud.reset_passed()
+
+
 func _on_seat_turn_began(color: StringName, phase: int) -> void:
 	if _hud != null:
 		_hud.show_turn(color, phase)
 	# Drive the on-board click flow for whichever human is active.
 	if GameController.is_human(color):
 		_human_color = color
-		_maybe_handoff(color)
+		_maybe_handoff(color, phase)
 
 
 ## A human's recruitment intent is awaited — raise the recruitment panel (Piece 3).
@@ -459,7 +477,7 @@ func _on_awaiting_action(color: StringName) -> void:
 		_serve_human(color)
 
 
-func _maybe_handoff(color: StringName) -> void:
+func _maybe_handoff(color: StringName, phase: int = -1) -> void:
 	# Cover only matters with 2+ humans (nothing to hide in solo-vs-AI).
 	if _human_count < 2:
 		_last_handoff_human = color
@@ -472,7 +490,7 @@ func _maybe_handoff(color: StringName) -> void:
 	if _hand_panel != null:
 		_hand_panel.hide_hand()   # never reveal a hand behind the device-pass cover
 	if _hud != null:
-		_hud.show_handoff(color)
+		_hud.show_handoff(color, phase)
 
 
 func _on_handoff_confirmed(color: StringName) -> void:
@@ -498,6 +516,7 @@ func _serve_human(color: StringName) -> void:
 		var playable: Array = [0] if phase == GameState.Phase.RECRUITMENT else [1]
 		_hand_panel.show_for(color, p, true, playable)
 	if phase == GameState.Phase.RECRUITMENT:
+		_recruit_card_played = false   # fresh turn: one card may be played
 		_recruit_panel.open_for(color, p)
 		return
 	# ACTION phase — hand control to the board click flow.
@@ -528,6 +547,8 @@ func _on_recruitment_choice(intent: Dictionary) -> void:
 var _pending_card = null            # a played card awaiting a target pick
 var _pending_card_index: int = -1
 var _pending_card_need: String = ""  # "controlled_space" | "player"
+var _recruit_panel_suspended := false  # recruitment panel hidden while targeting a card
+var _recruit_card_played := false      # a card already played this Recruitment turn (limit 1)
 
 
 ## A card was played. Resolve its effect via CardEffects. If the card needs a target,
@@ -535,6 +556,13 @@ var _pending_card_need: String = ""  # "controlled_space" | "player"
 func _on_play_card(card, index: int) -> void:
 	var p = GameState.get_player(_active_human)
 	if p == null or card == null:
+		return
+	# Recruitment phase: at most ONE card may be played per turn (rulebook). Block a
+	# second play (including while the first is still awaiting its on-board target).
+	if GameState.current_phase == GameState.Phase.RECRUITMENT \
+			and (_recruit_card_played or _pending_card != null):
+		if _hud != null:
+			_hud.set_action_hint("Only one card may be played during Recruitment.")
 		return
 	var unit_db: Dictionary = GameController.unit_db if _controller_match_active() else {}
 	var res: Dictionary = CardEffects.resolve(GameState, _active_human, card, unit_db)
@@ -581,6 +609,9 @@ func _consume_card(p, index: int, card) -> void:
 			p.hand.remove_at(i)
 			break
 	GameState.discard_action_card(card)
+	# Recruitment allows only one card per turn — record that it's now spent.
+	if GameState.current_phase == GameState.Phase.RECRUITMENT:
+		_recruit_card_played = true
 	# Re-show the hand preserving the current phase's playable types.
 	if _hand_panel != null:
 		var phase := GameState.current_phase
@@ -592,6 +623,13 @@ func _consume_card(p, index: int, card) -> void:
 
 func _enter_card_target_mode(need: String, prompt: String) -> void:
 	_cancel_selection()
+	# If a recruitment-phase card needs an on-board target, the Recruitment panel is
+	# covering the board — tuck it away so the player can click a space, then restore
+	# it once the card resolves (they still owe their Recruitment action).
+	if _recruit_panel != null and _recruit_panel.visible \
+			and (need == "controlled_space" or need == "special_unit"):
+		_recruit_panel.visible = false
+		_recruit_panel_suspended = true
 	if need == "controlled_space":
 		# Highlight every space the active player controls; next click picks one.
 		_clear_hilites()
@@ -641,6 +679,13 @@ func _clear_card_target_state() -> void:
 	_pending_card = null
 	_pending_card_index = -1
 	_pending_card_need = ""
+	# Restore the Recruitment panel if we tucked it away to collect the target.
+	if _recruit_panel_suspended:
+		_recruit_panel_suspended = false
+		if _recruit_panel != null:
+			var p = GameState.get_player(_active_human)
+			if p != null and GameState.current_phase == GameState.Phase.RECRUITMENT:
+				_recruit_panel.open_for(_active_human, p)
 
 
 const UNIT_DISPLAY := {
@@ -1084,20 +1129,28 @@ func _unhandled_input(event: InputEvent) -> void:
 		_lmb_dragged = false
 		if was_drag:
 			return   # it was a pan, not a click
-		# Under the controller, the board only accepts clicks during the active human's
-		# ACTION turn — not during recruitment, AI turns, or behind a hand-off cover.
-		if _controller_match_active() and (not _my_action_turn or _handoff_blocking):
+		# A pending on-board card target (Deploy Unit, Sticky Bomb, etc.) accepts a
+		# board click in ANY phase the card was legally played in — including
+		# Recruitment — so long as the device isn't behind a hand-off cover. This is
+		# checked BEFORE the Action-turn gate so recruitment-phase cards resolve at
+		# play time, not at the start of the next phase.
+		var targeting_card := _pending_card != null and _pending_card_need == "controlled_space"
+		if _controller_match_active() and _handoff_blocking:
+			return
+		# Outside card-targeting, the board only accepts clicks during the active
+		# human's ACTION turn (not recruitment or AI turns).
+		if _controller_match_active() and not targeting_card and not _my_action_turn:
 			return
 		var coord: HexCoord = _pixel_to_hex(event.position)
 		if coord == null or GameState.get_cell(coord) == null:
 			return
 		# Card targeting takes priority over the normal Activate flow.
-		if _pending_card != null and _pending_card_need == "controlled_space":
+		if targeting_card:
 			if not GameState.player_controls(_active_human, coord):
 				_hud.set_action_hint("Pick a space you CONTROL (highlighted), or right-click to cancel.")
 				return
 			# Deploy Unit (action_03) also needs WHICH Unit — pick it now, then deploy.
-			if _pending_card != null and _pending_card.effect_id == &"action_03":
+			if _pending_card.effect_id == &"action_03":
 				_show_supply_unit_picker(coord)
 			else:
 				_resolve_card_with_target(coord)
@@ -1344,12 +1397,9 @@ func _commit_action() -> void:
 		"carry_old_tech": true,
 	}
 	if _controller_match_active():
-		# If this move walks into an enemy/Guardian (combat will fire) AND the player
-		# holds combat cards (Re-roll / Cancel Attack / Extra Attack), offer a
-		# pre-combat window to play them; their effect rides along on the intent.
-		if _move_causes_combat(intent) and not _combat_cards_in_hand().is_empty():
-			_open_combat_card_window(intent)
-			return
+		# Just submit the move. If it lands in combat, the controller defers and runs
+		# the INTERACTIVE per-round combat (Fix H), prompting for an Attack card each
+		# round via _combat_round_provider — no pre-combat window needed.
 		_submit_action_intent(intent)
 		return
 	# Standalone demo fallback (no controller): resolve directly, as in Section E.
@@ -1365,6 +1415,176 @@ func _commit_action() -> void:
 	_cancel_selection()
 
 
+# ---------------------------------------------------------------------------
+#  Fix H — per-round combat card window
+# ---------------------------------------------------------------------------
+
+var _combat_pick_result: Dictionary = {}
+var _combat_pick_done: bool = false
+
+
+## Called by GameController BEFORE each combat round. For each HUMAN side in the
+## fight that holds ATTACK cards, raise a window letting them play ONE card this
+## round, then return the merged round modifiers
+## { extra_defense:{side->int}, reroll_misses:{side->int}, extra_rounds:int, cancel_round:bool }.
+func _combat_round_provider(round_index: int, sides: Array, _combatants, coord) -> Dictionary:
+	var mods := {"extra_defense": {}, "reroll_misses": {}, "extra_rounds": 0, "cancel_round": false}
+	for side in sides:
+		if not (side in human_colors_list()):
+			continue
+		var p = GameState.get_player(side)
+		if p == null:
+			continue
+		var cards := _attack_cards_for(p)
+		if cards.is_empty():
+			continue
+		var chosen = await _ask_combat_card(side, round_index, cards)
+		if chosen == null:
+			continue   # skipped
+		_apply_combat_card_to_mods(side, p, chosen, mods)
+	return mods
+
+
+func human_colors_list() -> Array:
+	return GameController.human_colors if _controller_match_active() else []
+
+
+func _attack_cards_for(p) -> Array:
+	var out: Array = []
+	for i in range(p.hand.size()):
+		var c = p.hand[i]
+		if c != null and int(c.card_type) == 2:
+			out.append({"card": c, "index": i})
+	return out
+
+
+## Apply a chosen combat card's effect into this round's `mods` and consume it.
+func _apply_combat_card_to_mods(side: StringName, p, chosen: Dictionary, mods: Dictionary) -> void:
+	var c = chosen["card"]
+	match c.effect_id:
+		&"action_15":   # Extra Attack
+			mods["extra_rounds"] = int(mods["extra_rounds"]) + 1
+		&"action_14":   # Cancel Attack — skip this round
+			mods["cancel_round"] = true
+		&"action_10":   # Re-roll two dice
+			var rr: Dictionary = mods["reroll_misses"]
+			rr[side] = int(rr.get(side, 0)) + 2
+		&"action_13":   # Defensive Stance — +1 def this round
+			var ed: Dictionary = mods["extra_defense"]
+			ed[side] = int(ed.get(side, 0)) + 1
+	# Consume the card by identity.
+	for i in range(p.hand.size()):
+		if is_same(p.hand[i], c):
+			p.hand.remove_at(i)
+			break
+	GameState.discard_action_card(c)
+
+
+## Raise a modal for `side` to play ONE attack card this round (or Skip). Awaits the
+## tap; returns the chosen {card,index} or null. Resolves via _combat_pick signal.
+func _ask_combat_card(side: StringName, round_index: int, cards: Array):
+	_combat_pick_done = false
+	_combat_pick_result = {}
+	var layer := CanvasLayer.new()
+	layer.layer = 27
+	layer.name = "CombatRoundWindow"
+	var dim := ColorRect.new()
+	dim.color = Color(0.05, 0.05, 0.08, 0.88)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(dim)
+	var col := VBoxContainer.new()
+	col.set_anchors_preset(Control.PRESET_CENTER)
+	col.position = Vector2(-280, -240)
+	col.add_theme_constant_override("separation", 12)
+	layer.add_child(col)
+	var title := Label.new()
+	title.text = "%s — Combat round %d: play a card?" % [str(side).to_upper(), round_index + 1]
+	title.add_theme_font_size_override("font_size", 22)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.custom_minimum_size = Vector2(560, 0)
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(title)
+	for entry in cards:
+		var c = entry["card"]
+		var b := Button.new()
+		b.text = "%s — %s" % [str(c.card_name), str(c.text)]
+		b.custom_minimum_size = Vector2(560, 54)
+		b.add_theme_font_size_override("font_size", 15)
+		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		b.pressed.connect(func():
+			layer.queue_free()
+			_combat_pick_result = entry
+			_combat_pick_done = true)
+		col.add_child(b)
+	var skip := Button.new()
+	skip.text = "SKIP (no card)"
+	skip.custom_minimum_size = Vector2(560, 50)
+	skip.add_theme_font_size_override("font_size", 18)
+	skip.pressed.connect(func():
+		layer.queue_free()
+		_combat_pick_result = {}
+		_combat_pick_done = true)
+	col.add_child(skip)
+	add_child(layer)
+	# Await the tap.
+	while not _combat_pick_done:
+		await get_tree().process_frame
+	if _combat_pick_result.is_empty():
+		return null
+	return _combat_pick_result
+
+
+## Interactive hit assignment (#6): ask the human DEFENDER which live Unit absorbs
+## this hit. Called by the resolver (via GameController.combat_assign_provider) only
+## when there are 2+ valid targets. `targets` is an Array of CombatResolver.Combatant;
+## returns the chosen Combatant. Awaits the tap using the same latch as the card modal.
+func _combat_assign_provider(targets: Array, defender_side: StringName):
+	if targets.is_empty():
+		return null
+	_combat_pick_done = false
+	_combat_pick_result = {}
+	var layer := CanvasLayer.new()
+	layer.layer = 27
+	layer.name = "AssignHitWindow"
+	var dim := ColorRect.new()
+	dim.color = Color(0.05, 0.05, 0.08, 0.88)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(dim)
+	var col := VBoxContainer.new()
+	col.set_anchors_preset(Control.PRESET_CENTER)
+	col.position = Vector2(-280, -200)
+	col.add_theme_constant_override("separation", 12)
+	layer.add_child(col)
+	var title := Label.new()
+	title.text = "%s — assign the hit to which Unit?" % str(defender_side).to_upper()
+	title.add_theme_font_size_override("font_size", 22)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.custom_minimum_size = Vector2(560, 0)
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(title)
+	for t in targets:
+		var uid = t.data.get("id")
+		var dmg: int = t.damage()
+		var def: int = t.defense()
+		var remaining: int = def - dmg
+		var b := Button.new()
+		b.text = "%s   (%d/%d dmg · %d hit%s left)" % [
+			UNIT_DISPLAY.get(uid, str(uid).capitalize()), dmg, def,
+			remaining, "" if remaining == 1 else "s"]
+		b.custom_minimum_size = Vector2(560, 54)
+		b.add_theme_font_size_override("font_size", 16)
+		var picked = t
+		b.pressed.connect(func():
+			layer.queue_free()
+			_combat_pick_result = {"combatant": picked}
+			_combat_pick_done = true)
+		col.add_child(b)
+	add_child(layer)
+	while not _combat_pick_done:
+		await get_tree().process_frame
+	return _combat_pick_result.get("combatant", null)
+
+
 ## Finalise an action intent: end the turn, hide UI, submit to our HumanAgent
 ## (the GameController is the single path into the engine).
 func _submit_action_intent(intent: Dictionary) -> void:
@@ -1376,132 +1596,6 @@ func _submit_action_intent(intent: Dictionary) -> void:
 	var agent = GameController.human_agent_for(_active_human)
 	if agent != null:
 		agent.submit(intent)
-
-
-## Will this action actually START a combat? Only if YOUR units end up on the
-## activated space (either moved in this action, or already standing there) AND an
-## enemy player / Guardian is present. Activating an enemy space without moving
-## anyone in is NOT combat.
-func _move_causes_combat(intent: Dictionary) -> bool:
-	var dest: HexCoord = intent.get("activate")
-	if dest == null:
-		return false
-	var cell: HexCell = GameState.get_cell(dest)
-	if cell == null:
-		return false
-	# Enemy/Guardian present?
-	var enemy := false
-	for owner in cell.units.keys():
-		if owner != _active_human and not cell.units[owner].is_empty():
-			enemy = true
-			break
-	if not enemy:
-		return false
-	# Will any of MY units be on the dest after this action? (moves with from != dest,
-	# i.e. actually entering, OR units already standing on dest.)
-	var moves: Array = intent.get("moves", [])
-	for m in moves:
-		if m.get("from") != null:
-			return true   # at least one staged unit (incl. already-on-dest auto-includes)
-	# No staged units at all -> nobody fights.
-	return false
-
-
-## The ATTACK-type combat cards (Defensive Stance / Re-roll / Cancel / Extra Attack)
-## currently in hand, as [{card, index}]. Any ATTACK card (type 2) qualifies.
-func _combat_cards_in_hand() -> Array:
-	var out: Array = []
-	var p = GameState.get_player(_active_human)
-	if p == null:
-		return out
-	for i in range(p.hand.size()):
-		var c = p.hand[i]
-		if c != null and int(c.card_type) == 2:   # ATTACK cards are the combat cards
-			out.append({"card": c, "index": i})
-	return out
-
-
-## A modal offered before combat: tick which combat cards to play, then Fight. The
-## chosen cards are consumed and their effects attached to the intent's combat_cards.
-func _open_combat_card_window(intent: Dictionary) -> void:
-	var available := _combat_cards_in_hand()
-	var chosen := {}   # index -> card
-	var layer := CanvasLayer.new()
-	layer.layer = 27
-	layer.name = "CombatCardWindow"
-	var dim := ColorRect.new()
-	dim.color = Color(0.05, 0.05, 0.08, 0.85)
-	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
-	layer.add_child(dim)
-	var col := VBoxContainer.new()
-	col.set_anchors_preset(Control.PRESET_CENTER)
-	col.position = Vector2(-260, -220)
-	col.add_theme_constant_override("separation", 12)
-	layer.add_child(col)
-	var title := Label.new()
-	title.text = "Combat! Play any cards before it resolves?"
-	title.add_theme_font_size_override("font_size", 22)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.custom_minimum_size = Vector2(520, 0)
-	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	col.add_child(title)
-	for entry in available:
-		var c = entry["card"]
-		var idx: int = entry["index"]
-		var b := Button.new()
-		b.toggle_mode = true
-		b.text = "%s — %s" % [str(c.card_name), str(c.text)]
-		b.custom_minimum_size = Vector2(520, 56)
-		b.add_theme_font_size_override("font_size", 16)
-		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		b.toggled.connect(func(on):
-			if on: chosen[idx] = c
-			else: chosen.erase(idx))
-		col.add_child(b)
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 14)
-	col.add_child(row)
-	var fight := Button.new()
-	fight.text = "FIGHT"
-	fight.custom_minimum_size = Vector2(240, 56)
-	fight.add_theme_font_size_override("font_size", 22)
-	fight.pressed.connect(func():
-		layer.queue_free()
-		_apply_combat_cards_and_submit(intent, chosen))
-	row.add_child(fight)
-	add_child(layer)
-
-
-## Consume the chosen combat cards, fold their effects into intent.combat_cards,
-## then submit. Re-roll = 2 re-rolls for the entering side; Extra Attack = +1 round;
-## Cancel Attack = -1 round.
-func _apply_combat_cards_and_submit(intent: Dictionary, chosen: Dictionary) -> void:
-	var p = GameState.get_player(_active_human)
-	var mods := {"extra_combat_rounds": 0, "cancelled_rounds": 0, "reroll_misses": {}}
-	# Remove the chosen cards from hand (highest index first to keep indices valid)
-	# and accumulate their effects.
-	var indices: Array = chosen.keys()
-	indices.sort()
-	indices.reverse()
-	for idx in indices:
-		var c = chosen[idx]
-		match c.effect_id:
-			&"action_15":   # Extra Attack
-				mods["extra_combat_rounds"] = int(mods["extra_combat_rounds"]) + 1
-			&"action_14":   # Cancel Attack
-				mods["cancelled_rounds"] = int(mods["cancelled_rounds"]) + 1
-			&"action_10":   # Re-roll (two dice)
-				var rr: Dictionary = mods["reroll_misses"]
-				rr[_active_human] = int(rr.get(_active_human, 0)) + 2
-			&"action_13":   # Defensive Stance — +1 Defense to your Units this fight
-				GameState.add_extra_defense(_active_human, 1)
-		if p != null and idx < p.hand.size():
-			var played = p.hand[idx]
-			p.hand.remove_at(idx)
-			GameState.discard_action_card(played)
-	intent["combat_cards"] = mods
-	_submit_action_intent(intent)
 
 
 ## The active human tapped Pass — end their Action turn (submit a pass intent).
