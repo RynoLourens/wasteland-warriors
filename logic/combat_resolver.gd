@@ -27,9 +27,9 @@ class_name CombatResolver
 ##   6. DAMAGE PERSISTS within a round: damage tokens stay on survivors across
 ##      combats; a unit dies when total damage >= its GREEN Defense. Healing
 ##      happens at end-of-round Cleanup (Section D), not here.
-##   7. DEFENDER MITIGATION: +1 Defense for controlling the space; does NOT
-##      stack with a Shield Drone (cap +1 from "controlled ground"). Other
-##      buffs (Siyana etc.) still stack and arrive via `extra_defense`.
+##   7. DEFENDER MITIGATION: +1 Defense for controlling the space, AND +1 per
+##      Shield Drone present — these DO STACK (controlled space + drone = +2).
+##      Other buffs (Siyana etc.) also stack and arrive via `extra_defense`.
 ##   8. PRE-COMBAT sub-rounds: Sticky Bomb (Sapperteur) and Razor
 ##      (applies_hits_first) roll BEFORE the main simultaneous round; their
 ##      kills remove targets before those targets get to roll.
@@ -543,8 +543,8 @@ func _assign_and_apply(defender_side: StringName, hits: int, defenders: Array,
 
 	# Compute the side's effective-defense bonus ONCE and stamp it onto every
 	# live defender, so death checks (is_dead) see the same effective Defense
-	# that targeting does. Controlled-ground (+1, capped) does NOT stack with a
-	# Shield Drone; stacking buffs (Siyana) add on top.
+	# that targeting does. Controlled-ground (+1) and Shield Drone(s) (+1 each) DO
+	# stack; other stacking buffs (Siyana) add on top via extra_defense.
 	var ground_bonus := _ground_defense_bonus(defender_side, controller, live)
 	var stack_bonus := int(extra_defense.get(defender_side, 0))
 	var total_bonus := ground_bonus + stack_bonus

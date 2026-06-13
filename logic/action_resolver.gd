@@ -187,18 +187,23 @@ static func _prune_dead(cell: HexCell) -> void:
 		if cell.get_token_state(owner) == HexCell.TokenState.CONTROL:
 			controller = owner
 			break
-	var has_drone := false
+	# +1 per Shield Drone present in the space (drones grant ground defense to the
+	# whole space). Count them — multiple drones each add +1.
+	var drone_bonus := 0
 	for owner in cell.units.keys():
 		for u in cell.units[owner]:
 			if u["data"] != null and u["data"].get("grants_ground_defense"):
-				has_drone = true
+				drone_bonus += 1
 	for owner in cell.units.keys():
 		var survivors := []
 		for u in cell.units[owner]:
 			var base_def: int = u["data"].defense if u["data"] != null else 1
-			var bonus := 0
-			if owner == controller or has_drone:
-				bonus = 1   # control / drone don't stack with each other (rulebook note)
+			# Controlled ground (+1) and Shield Drone(s) (+1 each) DO STACK — a unit on
+			# its controlled space with a drone present is base + 1 + 1. Must match the
+			# CombatResolver's _ground_defense_bonus, or cleanup kills a unit a hit early.
+			var bonus := drone_bonus
+			if owner == controller and controller != &"":
+				bonus += 1
 			if u.get("damage", 0) < base_def + bonus:
 				survivors.append(u)
 		if survivors.is_empty():

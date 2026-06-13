@@ -385,6 +385,30 @@ Drawn from your guide's Wasteland-Warriors-specific warnings plus general adapta
 
 ---
 
+## Rule Changes & Clarifications — Section F build
+
+These are the gameplay-rule decisions, corrections, and clarifications that surfaced while building and playtesting Section F. They are the authoritative statement of each rule for the digital game; where the original rulebook differed or was ambiguous, the version below wins. (Pure UI/layout fixes are not listed here.)
+
+1. **Central Chamber / Guardian spawning (clarified to three parts).** Every Guardian phase spawns **1** Guardian in the Central Chamber (bag draw, may fizzle to Scrap), starting from round 1. The moment a player moves a unit into the Central Chamber, spawn **1** Guardian there immediately and resolve combat. Once *any* player has ever reached the Central Chamber (the "breach"), from then on **2** Guardians spawn in the centre each Guardian phase. *(This replaced an older, contradictory "stopping in the centre with no Guardians present wakes 2" rule, which has been removed from the code.)*
+
+2. **Controlled-ground and Shield Drone defense bonuses DO stack (+2).** Defending on a space your side controls grants +1 Defense, and a Shield Drone present grants +1 Defense — **these stack**, so a unit on its controlled space with a drone has +2 effective Defense. Multiple drones each add +1. Other stacking buffs (e.g. Siyana) add on top. This must be applied identically in combat and in end-of-round cleanup.
+
+3. **Defender assigns hits.** When a side takes hits in combat, that side's controller chooses which of their own units absorbs each hit (excess hits on a unit that dies are lost). In the digital game a human defender is prompted to choose, but only when there is a genuine choice (two or more of their units could legally take the hit); otherwise it is assigned automatically.
+
+4. **Guardians stay and fight.** A Guardian that moves into a space containing units attacks them and **stops** there for the rest of that movement, rather than continuing on.
+
+5. **Card play is governed by card type, and on-board targets are chosen at play time.** Recruitment-type cards are playable in the Recruitment phase, Movement cards in the Action phase, and Attack cards only inside combat windows. When a card needs an on-board target (e.g. Deploy Unit, Sticky Bomb), the target space is chosen the moment the card is played, in the phase it is legally played in — not deferred to a later phase.
+
+6. **One card per Recruitment turn.** A player may play at most **one** card during their Recruitment turn. (This is separate from the Extra Recruitment card/effect, which grants an additional recruitment *action*, not an additional card play.)
+
+7. **Guardian bag handling.** The Guardian bag is 8 Guardians + 4 Scrap. A spawn draws one token: a Guardian is placed; Scrap returns to the bag (the spawn "fizzles"). A Guardian that dies returns to the bag and drops an Old Tech token where it died. If the bag has **no Guardians left to draw**, spawn draws are **skipped** until a Guardian is killed (which returns one to the bag).
+
+8. **Move-into-enemy is destination-only.** A unit may move into an enemy-occupied space only as the **final destination** of its move (to attack it); it may not pass *through* an enemy-occupied space.
+
+9. **Starting bag composition.** Each player begins with **6 Cowards + 6 Warriors** (the reviewed standard bag).
+
+---
+
 ## Part 5 — Resolved Decisions
 
 These were the open questions; all are now settled and folded into the plan above.
