@@ -41,6 +41,7 @@ var _hex_nodes: Dictionary = {}     # hexkey(String) -> Polygon2D
 var _hilites: Dictionary = {}       # hexkey -> Polygon2D (reachable overlay)
 var _overlays: Dictionary = {}      # hexkey -> Node2D (tokens/labels per cell)
 var _unit_rects: Dictionary = {}    # hexkey -> [{unit, owner, rect}] for click hit-test
+var _token_rects: Dictionary = {}   # hexkey -> [{data, rect}] for env/func hover tooltips
 var _reveal_order: Array = []       # Array of hexkey, centre-out (for animation)
 var _revealing := false
 var _reveal_tween: Tween = null     # master cadence tween (killed on skip)
@@ -95,6 +96,8 @@ func _ready() -> void:
 		bus.token_flipped.connect(_on_token_flipped)
 		bus.control_changed.connect(_on_control_changed)
 		bus.combat_resolved.connect(_on_combat_resolved)
+		bus.guardian_spawned.connect(_on_guardian_spawned)
+		bus.old_tech_captured.connect(_on_old_tech_captured)
 	if _skip_btn != null:
 		_skip_btn.pressed.connect(_skip_reveal)
 
@@ -107,6 +110,7 @@ func _ready() -> void:
 	_recruit_panel = RecruitmentPanel.new()
 	add_child(_recruit_panel)
 	_recruit_panel.choice_made.connect(_on_recruitment_choice)
+	_recruit_panel.view_map_requested.connect(_on_view_map_requested)
 	# Action-phase Pass button lives on the HUD.
 	_hud.pass_pressed.connect(_on_pass_pressed)
 
@@ -536,6 +540,22 @@ func _begin_action_turn(color: StringName) -> void:
 
 
 ## The Recruitment panel produced an intent — hand it to the active human's agent.
+## Player tapped "VIEW MAP" during Recruitment: hide the panel so the board is visible,
+## and arm a one-shot so the NEXT board click/right-click brings the panel back rather
+## than acting on the board.
+func _on_view_map_requested() -> void:
+	if _recruit_panel != null:
+		_recruit_panel.hide_panel()
+	_map_peeking = true
+	_set_status("Viewing map — tap anywhere on the board to return to Recruitment.")
+
+
+func _end_map_peek() -> void:
+	_map_peeking = false
+	if _recruit_panel != null:
+		_recruit_panel.show_panel()
+
+
 func _on_recruitment_choice(intent: Dictionary) -> void:
 	if _hand_panel != null:
 		_hand_panel.hide_hand()
@@ -548,6 +568,7 @@ var _pending_card = null            # a played card awaiting a target pick
 var _pending_card_index: int = -1
 var _pending_card_need: String = ""  # "controlled_space" | "player"
 var _recruit_panel_suspended := false  # recruitment panel hidden while targeting a card
+var _map_peeking := false              # recruitment panel hidden so the player can view the board
 var _recruit_card_played := false      # a card already played this Recruitment turn (limit 1)
 
 
@@ -801,6 +822,26 @@ func _on_action_resolved(_color: StringName, result: Dictionary) -> void:
 	# for every combat, incl. Guardian), so we only stash the illegal reason here.
 	if not result.get("ok", false):
 		_last_illegal_reason = str(result.get("reason", "illegal move"))
+		return
+	# Announce any Environment/Function token that resolved on arrival so a flipped
+	# token / room hazard isn't silent.
+	var token_log: Dictionary = result.get("token_log", {})
+	var resolved: Array = token_log.get("resolved", [])
+	if not resolved.is_empty():
+		var parts := []
+		for entry in resolved:
+			parts.append(str(entry.get("summary", "")))
+		var msg := "Explored: " + " · ".join(parts)
+		_set_status(msg)
+		# Also push to the action-hint panel, which persists through the turn (the
+		# status label is overwritten by the next seat's prompt almost immediately).
+		if _hud != null:
+			_hud.set_action_hint(msg)
+	# Token effects can spawn Guardians, add/kill Units, flip tokens — none of which
+	# emit a per-cell signal — so refresh the whole board after any move resolves so the
+	# visual + the cached hit-rects match the authoritative state (e.g. a Unit killed by
+	# Turrets actually disappears instead of lingering with stale "Health 0/1").
+	_redraw_all_cells()
 
 
 ## Recruitment mutates cells directly (Deploy adds Units, etc.) WITHOUT an EventBus
@@ -812,6 +853,17 @@ func _on_recruitment_resolved(_color: StringName, _summary: Dictionary) -> void:
 
 ## Cleanup (heals, clears activations, recomputes Control) runs inside the guardian
 ## phase without per-cell signals. Refresh the whole board between rounds.
+## A Guardian spawned (centre entry, Guardian phase, or env-token). It's on the board
+## in data but fires no per-cell redraw, so refresh everything to make it visible.
+func _on_guardian_spawned(_guardian, _coord) -> void:
+	_redraw_all_cells()
+
+
+## Old Tech dropped where a Guardian died — refresh so the OT badge appears.
+func _on_old_tech_captured(_player, _coord) -> void:
+	_redraw_all_cells()
+
+
 func _on_round_completed(_round_number: int) -> void:
 	_redraw_all_cells()
 
@@ -883,14 +935,65 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 		badge.position = Vector2(HEX_SIZE * 0.30, -HEX_H * 0.5 + 2)
 		ov.add_child(badge)
 
-	# Old Tech count (centre badge).
+	# Old Tech count — a styled gold pill at the TOP-CENTRE of the hex, clear of the
+	# unit stack (centre) and the token chips / name labels (lower-left). High contrast
+	# so the objective tokens are obvious.
 	if cell.old_tech > 0:
 		var ot := Label.new()
-		ot.text = "OT×%d" % cell.old_tech
-		ot.add_theme_font_size_override("font_size", 13)
-		ot.modulate = COL_EXIT
-		ot.position = Vector2(-14, HEX_H * 0.5 - 18)
+		ot.text = "★ OT×%d" % cell.old_tech
+		ot.add_theme_font_size_override("font_size", 14)
+		ot.modulate = Color(0.10, 0.10, 0.06)
+		var otsb := StyleBoxFlat.new()
+		otsb.bg_color = Color(0.95, 0.82, 0.30, 0.97)
+		otsb.set_corner_radius_all(8)
+		otsb.content_margin_left = 7
+		otsb.content_margin_right = 7
+		otsb.content_margin_top = 1
+		otsb.content_margin_bottom = 1
+		ot.add_theme_stylebox_override("normal", otsb)
+		ot.position = Vector2(-22, -HEX_H * 0.5 + 6)
 		ov.add_child(ot)
+
+	# Environment / Function tokens. Face-DOWN: a generic "?" chip tinted by kind so
+	# you can see a space has an unexplored token. Face-UP: the effect's short name.
+	_token_rects[coord.key()] = []
+	var tok_i := 0
+	for t in cell.tokens:
+		var kind: String = t.get("kind", "")
+		if kind != "env" and kind != "func":
+			continue
+		var face_up: bool = t.get("face_up", false)
+		var data = t.get("data")
+		var chip := Label.new()
+		chip.add_theme_font_size_override("font_size", 11)
+		var sb := StyleBoxFlat.new()
+		sb.set_corner_radius_all(6)
+		sb.content_margin_left = 5
+		sb.content_margin_right = 5
+		sb.content_margin_top = 1
+		sb.content_margin_bottom = 1
+		if face_up:
+			chip.text = _token_short_name(data)
+			sb.bg_color = Color(0.12, 0.13, 0.16, 0.92)
+			chip.modulate = _token_kind_color(kind, data)
+		else:
+			chip.text = "?"
+			sb.bg_color = _token_kind_color(kind, data)
+			sb.bg_color.a = 0.85
+			chip.modulate = Color(1, 1, 1, 0.95)
+		chip.add_theme_stylebox_override("normal", sb)
+		var chip_pos := Vector2(-HEX_SIZE * 0.5 + 4, HEX_H * 0.5 - 20 - tok_i * 16)
+		chip.position = chip_pos
+		ov.add_child(chip)
+		# Record an overlay-local hit-rect so hover can show the effect text (a bit
+		# wider than the glyph so it's easy to land on).
+		_token_rects[coord.key()].append({
+			"data": t.get("data"),
+			"face_up": t.get("face_up", false),
+			"kind": kind,
+			"rect": Rect2(chip_pos, Vector2(76, 18)),
+		})
+		tok_i += 1
 
 	# Sticky Bomb markers (card-placed): a small bomb badge tinted by the placer.
 	for t in cell.tokens:
@@ -905,6 +1008,33 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 
 	# Activation / Control token markers per owner.
 	_draw_token_markers(ov, cell)
+
+
+## Tint for an env/func token chip: blue = corridor env, orange = room env,
+## yellow = function (matching the physical token colours).
+func _token_kind_color(kind: String, data) -> Color:
+	if kind == "func":
+		return Color(0.92, 0.86, 0.30)
+	var category := ""
+	if data != null and "category" in data:
+		category = str(data.category)
+	if category == "Corridor":
+		return Color(0.36, 0.62, 0.95)
+	return Color(0.95, 0.62, 0.28)
+
+
+## Short label for a face-up token (the effect's display name, trimmed).
+func _token_short_name(data) -> String:
+	if data == null:
+		return "?"
+	var nm := ""
+	if "display_name" in data and str(data.display_name) != "":
+		nm = str(data.display_name)
+	elif "effect_id" in data:
+		nm = str(data.effect_id).trim_prefix("env_").trim_prefix("func_").capitalize()
+	if nm.length() > 14:
+		nm = nm.substr(0, 13) + "…"
+	return nm
 
 
 ## Draws one unit token (centred grid). Returns its Rect2 (overlay-local) for
@@ -1024,10 +1154,47 @@ func _input(event: InputEvent) -> void:
 		_hud.hide_tooltip()
 		return
 	var unit = _unit_at_point(coord, gp)
-	if unit == null:
-		_hud.hide_tooltip()
+	if unit != null:
+		_hud.show_tooltip(_unit_tooltip_text(coord, unit), event.position)
 		return
-	_hud.show_tooltip(_unit_tooltip_text(coord, unit), event.position)
+	# Not over a unit — maybe over an Environment/Function token chip. Show its effect.
+	var tok = _token_at_point(coord, gp)
+	if tok != null:
+		_hud.show_tooltip(_token_tooltip_text(tok), event.position)
+		return
+	_hud.hide_tooltip()
+
+
+## Token chip under a global point, in cell `coord`, or null. Same overlay-local basis
+## as _unit_at_point so the rects line up with what was drawn.
+func _token_at_point(coord: HexCoord, global_pos: Vector2):
+	var entries: Array = _token_rects.get(coord.key(), [])
+	if entries.is_empty():
+		return null
+	var sx: float = scale.x if scale.x != 0.0 else 1.0
+	var sy: float = scale.y if scale.y != 0.0 else 1.0
+	var board_local := Vector2((global_pos.x - position.x) / sx, (global_pos.y - position.y) / sy)
+	var local := board_local - _hex_to_pixel(coord.q, coord.r)
+	for e in entries:
+		var r: Rect2 = e["rect"]
+		if r.grow(TOKEN_HIT_PAD).has_point(local):
+			return e
+	return null
+
+
+## Tooltip text for a token chip entry {data, face_up, kind}. Face-up shows the full
+## rules text; face-down stays a mystery ("Unexplored …").
+func _token_tooltip_text(tok: Dictionary) -> String:
+	var data = tok.get("data")
+	var kind: String = tok.get("kind", "")
+	var label := "Function" if kind == "func" else "Environment"
+	if not tok.get("face_up", false):
+		return "Unexplored %s token\n(move a Unit here to reveal it)" % label
+	if data == null:
+		return label
+	var nm := str(data.display_name) if "display_name" in data and str(data.display_name) != "" else label
+	var body := str(data.text) if "text" in data and str(data.text) != "" else ""
+	return "%s — %s\n%s" % [label, nm, body] if body != "" else "%s — %s" % [label, nm]
 
 
 ## Build the stat block for a unit dict {data, damage} sitting on `coord`.
@@ -1129,6 +1296,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		_lmb_dragged = false
 		if was_drag:
 			return   # it was a pan, not a click
+		# Map-peek: while viewing the board during Recruitment, ANY click (that isn't a
+		# pan) ends the peek and restores the recruitment panel. The board state is
+		# unchanged — this is a look-only mode.
+		if _map_peeking:
+			_end_map_peek()
+			return
 		# A pending on-board card target (Deploy Unit, Sticky Bomb, etc.) accepts a
 		# board click in ANY phase the card was legally played in — including
 		# Recruitment — so long as the device isn't behind a hand-off cover. This is
@@ -1390,12 +1563,29 @@ func _staged_token_at_point(global_pos: Vector2) -> Dictionary:
 func _commit_action() -> void:
 	if _selected_activate == null:
 		return
+	# Old Tech carry choice: if any staged unit is leaving a space this player CONTROLS
+	# that holds Old Tech, let the player pick WHICH units carry a token out (one each),
+	# capped by the Old Tech available at each source. If there's nothing to choose, this
+	# returns immediately and we commit with auto-carry.
+	var eligible := _carry_eligible_units()
+	if not eligible.is_empty():
+		_prompt_old_tech_carriers(eligible)
+		return
+	_finish_commit([])
+
+
+## Build the move intent (with optional explicit `carriers`) and submit/resolve it.
+func _finish_commit(carriers: Array) -> void:
+	if _selected_activate == null:
+		return
 	var intent := {
 		"type": "move_attack",
 		"activate": _selected_activate,
 		"moves": _staged_moves.duplicate(),
 		"carry_old_tech": true,
 	}
+	if not carriers.is_empty():
+		intent["carriers"] = carriers
 	if _controller_match_active():
 		# Just submit the move. If it lands in combat, the controller defers and runs
 		# the INTERACTIVE per-round combat (Fix H), prompting for an Attack card each
@@ -1413,6 +1603,101 @@ func _commit_action() -> void:
 	else:
 		_set_status("Move resolved. Activate another space, or pass.")
 	_cancel_selection()
+
+
+## Staged units that COULD carry an Old Tech token out: their source space is one the
+## player Controls and it has Old Tech. Returns [{unit, from, name}]. (We don't cap by
+## OT count here — the picker enforces the cap per source at confirm time.)
+func _carry_eligible_units() -> Array:
+	var out := []
+	for m in _staged_moves:
+		var from_c = m.get("from")
+		if from_c == null or from_c.equals(_selected_activate):
+			continue   # units already on the activation space don't "leave"
+		var cell: HexCell = GameState.get_cell(from_c)
+		if cell == null or cell.old_tech <= 0:
+			continue
+		if not GameState.player_controls(_human_color, from_c):
+			continue
+		out.append({"unit": m["unit"], "from": from_c, "name": _unit_label(m["unit"])})
+	return out
+
+
+## Modal: a checklist of eligible units; the player ticks which ones carry an Old Tech
+## token out. Capped per source space by that space's Old Tech count. Confirm builds the
+## carriers list and calls _finish_commit.
+func _prompt_old_tech_carriers(eligible: Array) -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 30
+	add_child(layer)
+	var dim := ColorRect.new()
+	dim.color = Color(0.05, 0.05, 0.08, 0.82)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(dim)
+	var panel := PanelContainer.new()
+	panel.set_anchors_preset(Control.PRESET_CENTER)
+	panel.position = Vector2(-260, -200)
+	panel.custom_minimum_size = Vector2(520, 400)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.12, 0.13, 0.17, 1.0)
+	sb.set_corner_radius_all(14)
+	sb.set_content_margin_all(22)
+	panel.add_theme_stylebox_override("panel", sb)
+	layer.add_child(panel)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 12)
+	panel.add_child(col)
+	var title := Label.new()
+	title.text = "Carry Old Tech?"
+	title.add_theme_font_size_override("font_size", 24)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(title)
+	var sub := Label.new()
+	sub.text = "Tick the Units that should carry an Old Tech token out (one each)."
+	sub.add_theme_font_size_override("font_size", 15)
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sub.modulate = Color(1, 1, 1, 0.8)
+	col.add_child(sub)
+	var checks := []   # [{box: CheckBox, entry}]
+	for e in eligible:
+		var cb := CheckBox.new()
+		cb.text = "%s  (from %s)" % [str(e["name"]), str(e["from"])]
+		cb.add_theme_font_size_override("font_size", 18)
+		col.add_child(cb)
+		checks.append({"box": cb, "entry": e})
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	var confirm := Button.new()
+	confirm.text = "CONFIRM"
+	confirm.custom_minimum_size = Vector2(200, 50)
+	confirm.add_theme_font_size_override("font_size", 20)
+	var none_btn := Button.new()
+	none_btn.text = "CARRY NONE"
+	none_btn.custom_minimum_size = Vector2(180, 50)
+	none_btn.add_theme_font_size_override("font_size", 18)
+	row.add_child(confirm)
+	row.add_child(none_btn)
+	col.add_child(row)
+
+	var close_and := func(carriers: Array):
+		layer.queue_free()
+		_finish_commit(carriers)
+	confirm.pressed.connect(func():
+		# Build carriers, capping per source space by its Old Tech count.
+		var picked := []
+		var used := {}   # source key -> count taken
+		for c in checks:
+			if not c["box"].button_pressed:
+				continue
+			var fk: String = c["entry"]["from"].key()
+			var cell: HexCell = GameState.get_cell(c["entry"]["from"])
+			var cap: int = cell.old_tech if cell != null else 0
+			if int(used.get(fk, 0)) < cap:
+				picked.append(c["entry"]["unit"])
+				used[fk] = int(used.get(fk, 0)) + 1
+		close_and.call(picked))
+	none_btn.pressed.connect(func(): close_and.call([]))
 
 
 # ---------------------------------------------------------------------------

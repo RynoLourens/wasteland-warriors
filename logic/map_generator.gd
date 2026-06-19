@@ -274,7 +274,9 @@ static func _is_mandatory_slot(center: HexCoord, coord: HexCoord) -> bool:
 ##   * one orange Environment + one yellow Function token in each ROOM,
 ##   * NONE in the Central Chamber.
 ## Pools: { "corridor_env": Array, "room_env": Array, "func": Array } of Resource.
-static func seed_tokens(board: Dictionary, pools: Dictionary, seed: int) -> void:
+## `skip_keys` (optional): a set { hexkey(String) -> true } of cells that must NOT be
+## seeded — Rally Zones are ROOM fixtures but the rulebook never tokenises them.
+static func seed_tokens(board: Dictionary, pools: Dictionary, seed: int, skip_keys: Dictionary = {}) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed + 1  # derived seed: token layout reproducible but independent
 
@@ -285,6 +287,8 @@ static func seed_tokens(board: Dictionary, pools: Dictionary, seed: int) -> void
 	var keys := board.keys()
 	keys.sort()  # deterministic visit order
 	for k in keys:
+		if skip_keys.has(k):
+			continue   # Rally Zone (or any fixture) — never seed tokens here
 		var cell: HexCell = board[k]
 		match cell.tile_type:
 			TileType.CENTER:

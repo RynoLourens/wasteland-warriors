@@ -21,6 +21,11 @@ var bag: Array = []
 ## Action cards in hand (unlimited size; persist across rounds).
 var hand: Array = []
 
+## Face-down Artifact cards drawn from the Artifact Deck (Ancient Artifact token /
+## Function flips). Held face-down; may be discarded during Recruitment to place a
+## Special Unit in a controlled space (rulebook). v1 just tracks them.
+var artefacts: Array = []
+
 var old_tech_count: int = 0
 
 ## Set of hex keys this player currently Controls (face-down token of theirs).

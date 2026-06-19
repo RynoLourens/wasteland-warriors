@@ -50,6 +50,9 @@ var _rng: RandomNumberGenerator = null
 var _forced_faces: Array = []
 ## Section F Re-roll card: per-side budget of MISSED dice that get one re-roll.
 var _reroll_budget: Dictionary = {}
+## Defensive Turrets FUNCTION token: extra Attack dice per side this combat ({side->int}).
+## Added once to the side's main-round pool in _roll_side. Empty = behaves as before.
+var _extra_attack_dice: Dictionary = {}
 
 
 ## The ONE place a d6 is produced. Forced faces (tests) drain first, then rng.
@@ -121,6 +124,7 @@ func resolve(context: Dictionary) -> Array:
 	_rng = rng
 	_forced_faces = (context.get("forced_faces", []) as Array).duplicate()
 	_reroll_budget = (context.get("reroll_misses", {}) as Dictionary).duplicate()
+	_extra_attack_dice = (context.get("extra_attack_dice", {}) as Dictionary).duplicate()
 
 	var sides: Array = context.get("sides", [])
 	var combatants: Dictionary = context.get("combatants", {})
@@ -168,6 +172,7 @@ func resolve_interactive(context: Dictionary, round_provider: Callable) -> Array
 	_rng = rng
 	_forced_faces = (context.get("forced_faces", []) as Array).duplicate()
 	_reroll_budget = (context.get("reroll_misses", {}) as Dictionary).duplicate()
+	_extra_attack_dice = (context.get("extra_attack_dice", {}) as Dictionary).duplicate()
 
 	var sides: Array = context.get("sides", [])
 	var combatants: Dictionary = context.get("combatants", {})
@@ -483,6 +488,10 @@ func _roll_side(side: StringName, die_penalty: int, side_combatants: Array,
 			continue
 		total += _roll_dice(n, _crit_face(c.data), _hit_floor(c.data),
 			rng, log, "attack", side, c.data.get("id"))
+	# Defensive Turrets FUNCTION token: flat pool of extra Range-1 dice (normal profile).
+	var bonus_dice: int = int(_extra_attack_dice.get(side, 0))
+	if bonus_dice > 0:
+		total += _roll_dice(bonus_dice, 6, 4, rng, log, "attack", side, &"defensive_turrets")
 	return total
 
 

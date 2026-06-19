@@ -17,8 +17,12 @@ class_name HexGraph
 ## This class is pure logic: give it a board, a unit's abilities, and a start
 ## hex, and it returns the set of reachable hexes. No scenes, fully testable.
 
-const TELEPORTER_EFFECT := &"teleporter_node"   ## env effect id flagging a teleporter
-const TOUGH_TERRAIN_EFFECT := &"tough_terrain"  ## env effect id that stops movement
+# NOTE: these MUST match the effect_id strings on the real .tres tokens
+# (data/tokens/env_corridor_teleporter_node.tres / env_corridor_tough_terrain.tres),
+# which carry the `env_` prefix. An earlier version omitted the prefix, so these
+# movement mechanics silently never fired with the shipped token set.
+const TELEPORTER_EFFECT := &"env_teleporter_node"   ## env effect id flagging a teleporter
+const TOUGH_TERRAIN_EFFECT := &"env_tough_terrain"  ## env effect id that stops movement
 
 
 ## Reachable hexes for a unit moving from `start`, given its Move budget and
@@ -109,6 +113,44 @@ static func path_distance(board: Dictionary, start: HexCoord, goal: HexCoord, un
 			dist[nk] = dist[cur.key()] + 1
 			queue.append(n)
 	return -1
+
+
+## Reconstruct ONE shortest doorway path from `start` to `goal` (inclusive of both),
+## or [] if unreachable. BFS with parent tracking; deterministic neighbour order. Used
+## to resolve tokens on the cells a Unit PASSES THROUGH (rulebook Ch.11), which the
+## source->dest jump in ActionResolver would otherwise skip.
+static func find_path(board: Dictionary, start: HexCoord, goal: HexCoord, unit_abilities: Dictionary) -> Array:
+	if start.equals(goal):
+		return [start]
+	var owner: StringName = unit_abilities.get("owner", &"")
+	var through_enemies: bool = unit_abilities.get("moves_through_enemies", false)
+	var can_blink: bool = unit_abilities.get("can_blink", false)
+	var teleporters := _teleporter_hexes(board)
+	var parent := {start.key(): null}
+	var queue := [start]
+	while not queue.is_empty():
+		var cur: HexCoord = queue.pop_front()
+		if cur.equals(goal):
+			# Walk parents back to start.
+			var path := []
+			var ck = cur.key()   # untyped: parent chain ends at null for the start key
+			while ck != null:
+				path.push_front(HexCoord.from_key(ck))
+				ck = parent.get(ck)
+			return path
+		var nbrs := _adjacent(board, cur, teleporters, can_blink)
+		nbrs.sort_custom(func(a, b): return a.key() < b.key())
+		for n in nbrs:
+			var nk: String = n.key()
+			if not board.has(nk) or parent.has(nk):
+				continue
+			var ncell: HexCell = board[nk]
+			# Can't pass THROUGH an enemy cell (unless it's the goal or we ignore enemies).
+			if ncell.has_enemy_units(owner) and not through_enemies and not n.equals(goal):
+				continue
+			parent[nk] = cur.key()
+			queue.append(n)
+	return []
 
 
 # --- Adjacency (the dynamic-edge core) ----------------------------------------

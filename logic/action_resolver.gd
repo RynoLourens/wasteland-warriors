@@ -40,6 +40,12 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 
 	var moves: Array = intent.get("moves", [])
 	var carry: bool = intent.get("carry_old_tech", false)
+	# Optional explicit carrier list: the specific unit dicts the player chose to carry
+	# an Old Tech token out. When present, ONLY these units carry (one token each). When
+	# absent, fall back to auto-carry (every moving unit carries if OT is available) so
+	# tests and the AI keep their prior behaviour.
+	var carriers: Array = intent.get("carriers", [])
+	var use_explicit_carriers: bool = not carriers.is_empty()
 
 	# --- 2. Validate every move BEFORE mutating anything (atomic action). ---
 	var plan := []   # Array of {from_cell, unit, source_coord}
@@ -72,6 +78,7 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 
 	# --- 2c. Execute the validated moves. ---
 	var p = state.get_player(color)
+	var moved_in := 0   # units that actually MOVED into dest (not already standing there)
 	for step in plan:
 		var from_cell: HexCell = step["from_cell"]
 		var unit = step["unit"]
@@ -80,14 +87,33 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 			continue   # unit already standing on the activated space; no movement
 		from_cell.remove_unit(color, unit)
 		dest.add_unit(color, unit)
+		moved_in += 1
 		_emit(state, "unit_moved", [unit, source_coord, activate])
+		# Resolve tokens on the cells this Unit PASSED THROUGH (rulebook Ch.11: env and
+		# function tokens flip "when a Unit moves through" a space, not only on a stop).
+		# We reconstruct the unit's path and resolve each INTERMEDIATE cell (excluding the
+		# source it left and the destination, which step 3 below handles).
+		_resolve_passthrough_tokens(state, color, source_coord, activate, unit, intent)
 		# Old Tech carrying: you must CONTROL the source space, one token per unit.
-		if carry and from_cell.old_tech > 0 and p != null and p.controls(source_coord):
+		# With an explicit carrier list, only chosen units carry; otherwise auto-carry.
+		var this_carries := carry
+		if use_explicit_carriers:
+			this_carries = false
+			for cu in carriers:
+				if is_same(cu, unit):
+					this_carries = true
+					break
+		if this_carries and from_cell.old_tech > 0 and p != null and p.controls(source_coord):
 			from_cell.old_tech -= 1
 			dest.old_tech += 1
 
-	# --- 3. Environment-on-arrival: flip & resolve face-down env tokens on dest. ---
-	_resolve_environment_on_arrival(state, dest)
+	# --- 3. Environment/Function-on-arrival: flip & RESOLVE face-down tokens on dest. ---
+	# Tokens flip only when a Unit actually MOVED into the space this action (rulebook:
+	# "moves through or stops in"). Activating an empty space with no movers must NOT
+	# flip its token. `moved_in` counts units this action pulled from a DIFFERENT space.
+	var token_log: Dictionary = {"resolved": [], "damage": {}}
+	if moved_in > 0:
+		token_log = _resolve_environment_on_arrival(state, color, dest, intent)
 
 	# --- 4. Attack: if enemies / Guardians are now sharing the space, fight. ---
 	# When intent.defer_combat is set (live game with a human who may play cards each
@@ -97,7 +123,8 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 	if has_fight and intent.get("defer_combat", false):
 		_after_move_effects(state, color, dest)
 		return {"ok": true, "reason": "", "combat_log": [], "combat_pending": true,
-			"combat_coord": activate, "entering_side": color, "dest_coord": activate}
+			"combat_coord": activate, "entering_side": color, "dest_coord": activate,
+			"token_log": token_log}
 
 	var combat_log: Array = []
 	if has_fight:
@@ -106,7 +133,8 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 	# --- 4b. Rally Zone / Central Chamber side effects after the dust settles. ---
 	_after_move_effects(state, color, dest)
 
-	return {"ok": true, "reason": "", "combat_log": combat_log, "dest_coord": activate}
+	return {"ok": true, "reason": "", "combat_log": combat_log, "dest_coord": activate,
+		"token_log": token_log}
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +174,20 @@ static func build_combat_context(state, cell: HexCell, entering_side: StringName
 			if bonus != 0:
 				extra_def[owner] = bonus
 
+	# Shield Drones FUNCTION token (Ch.13): +1 Defense to the controller's Units.
+	# A Function needs Control to use; stacks on controlled-ground / Siyana via extra_defense.
+	if controller != &"" and cell.has_token_effect(&"func_shield_drones", true):
+		extra_def[controller] = int(extra_def.get(controller, 0)) + 1
+
+	# Defensive Turrets FUNCTION token (Ch.13): +1 Range-1 Attack die per Unit, controller only.
+	var extra_attack_dice := {}
+	if controller != &"" and cell.has_token_effect(&"func_defensive_turrets", true):
+		var n_def: int = cell.units_for(controller).size()
+		if n_def > 0:
+			extra_attack_dice[controller] = n_def
+
 	return {
+		"extra_attack_dice": extra_attack_dice,
 		"sides": sides,
 		"combatants": combatants,
 		"controller": controller,
@@ -161,8 +202,17 @@ static func build_combat_context(state, cell: HexCell, entering_side: StringName
 
 ## Prune dead units from `cell` and emit combat_resolved. Call after ANY combat
 ## (sync or interactive) once the resolver has stamped damage onto the cell dicts.
+## ALSO drops an Old Tech token for every Guardian that died here (rulebook Ch.11) and
+## emits `old_tech_captured`, so Old Tech appears regardless of which combat path ran —
+## the bag-return is handled by the caller that owns the GuardianManager.
 static func finish_combat(state, cell: HexCell, log: Array) -> void:
+	var guardians_before: int = cell.units_for(GUARDIAN_OWNER).size()
 	_prune_dead(cell)
+	var guardians_after: int = cell.units_for(GUARDIAN_OWNER).size()
+	var died: int = guardians_before - guardians_after
+	for _i in range(died):
+		cell.old_tech += 1
+		_emit(state, "old_tech_captured", [GUARDIAN_OWNER, cell.coord])
 	_emit(state, "combat_resolved", [log])
 
 
@@ -259,15 +309,52 @@ static func _has_other_forces(cell: HexCell, me: StringName) -> bool:
 #  Environment-on-arrival
 # ---------------------------------------------------------------------------
 
-## When units arrive on a space, its face-DOWN Environment tokens flip face-up and
-## resolve. Section D keeps the data-driven flip + flag; the concrete per-effect
-## damage hooks are wired with the real .tres pools in Section E/F. We flip here so
-## teleporters / tough-terrain / shield-drone auras become active immediately.
-static func _resolve_environment_on_arrival(state, cell: HexCell) -> void:
-	for t in cell.tokens:
-		if not t.get("face_up", false):
-			t["face_up"] = true
-			_emit(state, "token_flipped", [cell.coord, &"environment", HexCell.TokenState.NONE])
+## When units arrive on a space, its face-DOWN Environment and Function tokens flip
+## face-up and RESOLVE (Ch.11/Ch.13) via TokenEffects. `intent.token_deps` (set by
+## GameController) supplies unit_db / guardian_pool / draw callbacks; we fall back to a
+## minimal deps from `state` so headless tests / the FSM still resolve dice/coward/bag.
+## Returns the TokenEffects log so the caller/UI can announce what happened.
+## Flip & resolve tokens on cells a Unit PASSED THROUGH (between source and dest,
+## exclusive). Uses HexGraph.find_path for the unit's actual route. Degrades safely if
+## no path is found (e.g. teleporter hops — those have no walked corridor).
+static func _resolve_passthrough_tokens(state, color: StringName, source_coord: HexCoord, dest_coord: HexCoord, unit, intent: Dictionary) -> void:
+	var data = unit.get("data") if unit is Dictionary else unit
+	var abilities := {
+		"move": 99,
+		"moves_through_enemies": data.moves_through_enemies if data != null else false,
+		"can_blink": false,
+		"owner": color,
+	}
+	var path: Array = HexGraph.find_path(state.board, source_coord, dest_coord, abilities)
+	if path.size() <= 2:
+		return   # adjacent move or no path: no intermediate cells to resolve
+	var deps: Dictionary = intent.get("token_deps", {})
+	if deps.is_empty():
+		deps = _default_token_deps(state)
+	# Skip index 0 (source) and the last (dest); resolve everything between.
+	for i in range(1, path.size() - 1):
+		var mid: HexCell = state.get_cell(path[i])
+		if mid != null:
+			TokenEffects.resolve_on_passthrough(state, mid, color, deps)
+
+
+static func _resolve_environment_on_arrival(state, color: StringName, cell: HexCell, intent: Dictionary) -> Dictionary:
+	var deps: Dictionary = intent.get("token_deps", {})
+	if deps.is_empty():
+		deps = _default_token_deps(state)
+	return TokenEffects.resolve_cell(state, cell, color, deps)
+
+
+## Minimal deps from `state` alone: seeded rng + Action-card draw/discard. No unit_db
+## or guardian_pool, so Gang Press / env-Guardian degrade to no-ops in pure headless
+## tests unless the caller injects richer deps.
+static func _default_token_deps(state) -> Dictionary:
+	var deps := {"rng": state.rng if "rng" in state else null}
+	if state.has_method("draw_action_card"):
+		deps["draw_action"] = Callable(state, "draw_action_card")
+	if state.has_method("discard_action_card"):
+		deps["discard_action"] = Callable(state, "discard_action_card")
+	return deps
 
 
 # ---------------------------------------------------------------------------

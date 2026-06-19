@@ -44,7 +44,7 @@ var _tooltip_label: Label
 
 # Phase tracker: a row of pills (Recruitment > Action > Guardian) under the banner;
 # the current phase is highlighted so players can see where the round is.
-var _phase_tracker: HBoxContainer
+var _phase_tracker: BoxContainer
 var _phase_pills: Dictionary = {}   # phase int -> Label
 const PHASE_ORDER := [0, 1, 2]      # Recruitment, Action, Guardian
 
@@ -81,6 +81,10 @@ func _build_tooltip() -> void:
 	_tooltip_label = Label.new()
 	_tooltip_label.add_theme_font_size_override("font_size", 14)
 	_tooltip_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Wrap long token rules text instead of running off the screen edge.
+	_tooltip_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_tooltip_label.custom_minimum_size = Vector2(360, 0)
+	_tooltip.custom_minimum_size = Vector2(380, 0)
 	_tooltip.add_child(_tooltip_label)
 	add_child(_tooltip)
 
@@ -92,8 +96,10 @@ func show_tooltip(text: String, screen_pos: Vector2) -> void:
 	# Offset slightly up-right of the cursor; keep on-screen.
 	var vp := get_viewport().get_visible_rect().size
 	var pos := screen_pos + Vector2(16, -10)
-	pos.x = min(pos.x, vp.x - 220)
-	pos.y = max(pos.y, 8)
+	# Keep the (up to ~400px wide) tooltip fully on-screen on both axes.
+	pos.x = min(pos.x, vp.x - 400)
+	pos.x = max(pos.x, 8)
+	pos.y = min(max(pos.y, 8), vp.y - 120)
 	_tooltip.position = pos
 
 
@@ -153,23 +159,30 @@ func set_phase(phase: int) -> void:
 # ---------------------------------------------------------------------------
 
 func _build_phase_tracker() -> void:
-	_phase_tracker = HBoxContainer.new()
-	_phase_tracker.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	_phase_tracker.position = Vector2(-220, 66)   # just under the 48-tall banner (banner ends ~58)
-	_phase_tracker.custom_minimum_size = Vector2(440, 0)
-	_phase_tracker.alignment = BoxContainer.ALIGNMENT_CENTER
-	_phase_tracker.add_theme_constant_override("separation", 8)
+	# VERTICAL tracker down the RIGHT edge, always visible across every phase/round.
+	# Anchored top-right, pushed down so it clears the passed-strip; the PASS button is
+	# bottom-right, so the upper-right column is free.
+	_phase_tracker = VBoxContainer.new()
+	_phase_tracker.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	_phase_tracker.position = Vector2(-150, 96)
+	_phase_tracker.custom_minimum_size = Vector2(130, 0)
+	_phase_tracker.alignment = BoxContainer.ALIGNMENT_BEGIN
+	_phase_tracker.add_theme_constant_override("separation", 6)
 	_phase_tracker.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	for i in range(PHASE_ORDER.size()):
 		var phase: int = PHASE_ORDER[i]
 		var pill := _make_phase_pill(PHASE_NAMES.get(phase, "—"))
+		pill.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		pill.custom_minimum_size = Vector2(118, 0)
 		_phase_pills[phase] = pill
 		_phase_tracker.add_child(pill)
 		if i < PHASE_ORDER.size() - 1:
 			var arrow := Label.new()
-			arrow.text = "›"
-			arrow.add_theme_font_size_override("font_size", 16)
+			arrow.text = "↓"
+			arrow.add_theme_font_size_override("font_size", 14)
 			arrow.modulate = Color(1, 1, 1, 0.35)
+			arrow.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			arrow.custom_minimum_size = Vector2(118, 0)
 			arrow.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			_phase_tracker.add_child(arrow)
 	add_child(_phase_tracker)
@@ -277,7 +290,7 @@ func _build_action_bar() -> void:
 	# direct HUD child so its anchors are SCREEN-relative (not the bottom bar's).
 	var hint_panel := PanelContainer.new()
 	hint_panel.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	hint_panel.position = Vector2(-360, 104)   # below the phase tracker (which sits at y=64)
+	hint_panel.position = Vector2(-360, 66)   # just under the banner; the phase tracker now lives on the right edge
 	hint_panel.custom_minimum_size = Vector2(720, 0)
 	hint_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var hsb := StyleBoxFlat.new()

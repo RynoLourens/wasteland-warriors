@@ -14,6 +14,7 @@ class_name RecruitmentPanel
 ## mode (Regular vs Special), then the units, capped accordingly.
 
 signal choice_made(intent)
+signal view_map_requested()   ## player wants to peek at the board during Recruitment
 
 # Regular Units ("Units"): Warrior, Scout, Gunner, Heavy.
 # Special Units: Berserker, Manstopper, Infiltrator, Sapperteur.
@@ -64,8 +65,8 @@ func _build_ui() -> void:
 
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_CENTER)
-	panel.position = Vector2(-330, -230)
-	panel.custom_minimum_size = Vector2(660, 460)
+	panel.position = Vector2(-330, -270)
+	panel.custom_minimum_size = Vector2(660, 540)
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.12, 0.13, 0.17, 1.0)
 	sb.set_corner_radius_all(14)
@@ -96,6 +97,10 @@ func _build_ui() -> void:
 	_choice_box.add_child(_big_button("DEPLOY  —  draw 3 from bag", _on_deploy))
 	_choice_box.add_child(_big_button("RECRUIT  —  add Units to bag", _on_recruit_open))
 	_choice_box.add_child(_big_button("PUNISH COWARDS  —  draw 5, remove Cowards", _on_punish))
+	# Let the player peek at the board to plan, then tap to return (handled by BoardView).
+	var view_btn := _big_button("VIEW MAP  —  tap board to return", _on_view_map)
+	view_btn.modulate = Color(0.8, 0.9, 1.0)
+	_choice_box.add_child(view_btn)
 
 	# The Recruit MODE chooser (Regular vs Special), shown when Recruit is tapped.
 	_mode_box = VBoxContainer.new()
@@ -170,6 +175,22 @@ func _recruit_add_button(uid: StringName) -> Button:
 
 ## Raise the panel for `color`, reading `player` (the Player model) for bag odds and
 ## leader-based recruit cap.
+func _on_view_map() -> void:
+	emit_signal("view_map_requested")
+
+
+## Hide the whole panel (board becomes visible + clickable) without losing its state.
+func hide_panel() -> void:
+	if _root != null:
+		_root.visible = false
+
+
+## Bring the panel back after a map peek.
+func show_panel() -> void:
+	if _root != null:
+		_root.visible = true
+
+
 func open_for(color: StringName, player) -> void:
 	_color = color
 	_player = player

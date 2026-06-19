@@ -6,7 +6,7 @@
 script = ExtResource("1")
 id = &"env_ancient_artifact"
 display_name = "Ancient Artifact"
-text = "Draw one card from the Bauble Deck and place it face down in front of you. Face-down Baubles may be discarded during Recruitment to place one Special Unit from the supply in a space you Control."
+text = "Draw one card from the Artifact Deck and place it face down in front of you. Face-down Artifacts may be discarded during Recruitment to place one Special Unit from the supply in a space you Control."
 effect_id = &"env_ancient_artifact"
 category = "Corridor"
 persists_in_room = false

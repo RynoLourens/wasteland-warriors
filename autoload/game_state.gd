@@ -57,7 +57,11 @@ func setup_match(player_specs: Array, seed: int) -> void:
 
 	# 2. Seed tokens face-down. An empty pool seeds nothing, which is fine for
 	# headless rules tests; Section E/F wires the real .tres pools in.
-	MapGenerator.seed_tokens(board, _token_pools(), seed)
+	var _rz_skip := {}
+	for _c in rally_zones.keys():
+		if rally_zones[_c] != null:
+			_rz_skip[rally_zones[_c].key()] = true
+	MapGenerator.seed_tokens(board, _token_pools(), seed, _rz_skip)
 
 	# 3. Build players, each with a starting bag and their rally zone.
 	players.clear()

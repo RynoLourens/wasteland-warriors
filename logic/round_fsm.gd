@@ -252,6 +252,19 @@ func run_cleanup() -> void:
 			if cell.get_token_state(owner) == HexCell.TokenState.ACTIVE:
 				cell.set_token_state(owner, HexCell.TokenState.NONE)
 
+		# Discard spent Environment tokens: a face-up env token that has done its job
+		# is removed at the Cleanup AFTER it flipped (so it's visible the round it
+		# resolved, then gone). Persistent ones (Darkness / Tough Terrain / Teleporter)
+		# and Function tokens stay; sticky bombs are handled by combat, not here.
+		var kept_tokens := []
+		for t in cell.tokens:
+			var kind: String = t.get("kind", "")
+			var face_up: bool = t.get("face_up", false)
+			if kind == "env" and face_up and not _env_persists(t):
+				continue   # discard the spent one-shot environment token
+			kept_tokens.append(t)
+		cell.tokens = kept_tokens
+
 		# Heal everyone fully.
 		for owner in cell.units.keys():
 			for u in cell.units[owner]:
@@ -284,6 +297,21 @@ func run_cleanup() -> void:
 	# 4. Pass the First Player token clockwise (next in turn order).
 	if not state.turn_order.is_empty():
 		first_player_index = (first_player_index + 1) % state.turn_order.size()
+
+
+## True if a flipped Environment token stays in its room (Darkness / Tough Terrain /
+## Teleporter Node). These are read by movement/combat each round, so Cleanup keeps
+## them; every other env token is a spent one-shot and is discarded.
+const PERSISTENT_ENV := [&"env_darkness", &"env_tough_terrain", &"env_teleporter_node"]
+
+func _env_persists(token: Dictionary) -> bool:
+	var data = token.get("data")
+	if data == null:
+		return false
+	# Prefer the explicit schema flag if present; fall back to the id list.
+	if "persists_in_room" in data and bool(data.persists_in_room):
+		return true
+	return data.get("effect_id") in PERSISTENT_ENV
 
 
 # ---------------------------------------------------------------------------

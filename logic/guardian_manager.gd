@@ -90,9 +90,14 @@ func _draw():
 	return token
 
 
-## A Guardian died on `coord`: return its token to the bag and drop Old Tech there.
-func on_guardian_death(state, guardian_unit: Dictionary, coord: HexCoord) -> void:
+## A Guardian died on `coord`: return its token to the bag, and (unless suppressed)
+## drop an Old Tech token there. `drop_old_tech` is false when the caller already
+## dropped it via ActionResolver.finish_combat (the interactive combat path), so Old
+## Tech isn't doubled.
+func on_guardian_death(state, guardian_unit: Dictionary, coord: HexCoord, drop_old_tech: bool = true) -> void:
 	bag.append(guardian_unit["data"])
+	if not drop_old_tech:
+		return
 	var cell: HexCell = state.get_cell(coord)
 	if cell != null:
 		cell.old_tech += 1
@@ -129,9 +134,10 @@ func _anyone_reached_center(state) -> bool:
 	return false
 
 
-## Move one Guardian up to its green Move, one doorway step at a time toward the
-## nearest enemy Units; attack-and-stop on contact. Automated targeting: head for
-## the closest player unit by doorway distance (deterministic tie-break by hexkey).
+## Move one Guardian up to its green Move, one doorway step at a time in a RANDOM
+## direction (rulebook Ch.10: "roll a die per green Move and move it in the indicated
+## direction, one die at a time"); attack-and-stop on contact. Direction is the seeded
+## rng among the cell's valid doorway exits, so Guardians wander rather than hunt.
 func _move_one_guardian(state, from_coord: HexCoord, unit: Dictionary) -> void:
 	var data = unit["data"]
 	var steps: int = data.move if data != null else 1
@@ -148,7 +154,7 @@ func _move_one_guardian(state, from_coord: HexCoord, unit: Dictionary) -> void:
 		var cell: HexCell = state.get_cell(cur)
 		# Guardian movement uses Blink-style adjacency only if it can pass walls.
 		var can_blink: bool = data != null and data.get("moves_through_walls")
-		var next = _step_toward_prey(state, cur, can_blink)   # may be null; untyped on purpose
+		var next = _step_random(state, cur, can_blink)   # random doorway step; may be null
 		if next == null:
 			break   # nowhere to go
 		# Move the guardian one step.
@@ -163,45 +169,22 @@ func _move_one_guardian(state, from_coord: HexCoord, unit: Dictionary) -> void:
 			break
 
 
-## Choose the next hex one step toward the nearest player unit. Returns null if
-## the Guardian can't reach any prey.
-func _step_toward_prey(state, from_coord: HexCoord, can_blink: bool):
-	var abilities := {
-		"move": 99, "moves_through_enemies": true, "can_blink": can_blink,
-		"owner": GUARDIAN_OWNER,
-	}
-	# Find the closest player-occupied hex by doorway distance.
-	var best_target = null
-	var best_dist := 1 << 30
-	for k in state.board.keys():
-		var c: HexCell = state.board[k]
-		if not _has_player_units(c):
-			continue
-		var goal: HexCoord = HexCoord.from_key(k)
-		var d := HexGraph.path_distance(state.board, from_coord, goal, abilities)
-		if d > 0 and (d < best_dist or (d == best_dist and (best_target == null or k < best_target.key()))):
-			best_dist = d
-			best_target = goal
-	if best_target == null:
-		return null
-	# Take the first step on a shortest path toward that target: pick the immediate
-	# neighbour that MINIMISES remaining doorway distance to best_target, with a
-	# deterministic hexkey tie-break so a seed reproduces exactly.
+## Pick a RANDOM next hex one doorway step from `from_coord` (rulebook: the die roll
+## chooses a direction). We roll among the cell's valid doorway exits via the seeded
+## rng; if the cell has no exits the Guardian stays put (returns null). Deterministic
+## for a given seed because it draws from the same rng stream.
+func _step_random(state, from_coord: HexCoord, can_blink: bool):
 	var one_step := {
 		"move": 1, "moves_through_enemies": true, "can_blink": can_blink,
 		"owner": GUARDIAN_OWNER,
 	}
-	var neighbours := HexGraph.reachable(state.board, from_coord, one_step)
-	var chosen = null
-	var chosen_remaining := 1 << 30
-	for n in neighbours:
-		var nd := HexGraph.path_distance(state.board, n, best_target, abilities)
-		if nd < 0:
-			continue
-		if nd < chosen_remaining or (nd == chosen_remaining and (chosen == null or n.key() < chosen.key())):
-			chosen = n
-			chosen_remaining = nd
-	return chosen
+	var neighbours: Array = HexGraph.reachable(state.board, from_coord, one_step)
+	if neighbours.is_empty():
+		return null
+	# Sort for determinism, then pick one at random from the seeded rng.
+	neighbours.sort_custom(func(a, b): return a.key() < b.key())
+	var idx: int = rng.randi_range(0, neighbours.size() - 1)
+	return neighbours[idx]
 
 
 ## Guardian attacks the player Units in `cell`: a one-side combat where the

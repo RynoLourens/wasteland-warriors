@@ -40,6 +40,8 @@ var unit_db: Dictionary = {}             ## unit id -> UnitData
 var human_colors: Array = []             ## colors driven by a HumanAgent (for hand-off)
 
 var _fsm: RoundFSM                        ## internal: cleanup / guardian / victory mechanics
+var _guardian_pool: Array = []           ## static GuardianData list (for env-Guardian spawns)
+var _artefact_deck: Array = []           ## ArtefactData pool drawn by Artifact tokens/functions
 var _running := false
 var winner: StringName = &""
 
@@ -73,7 +75,11 @@ func start_match(seats: Array, seed: int) -> void:
 
 	# 2. Seed the real environment/function tokens face-down (the greybox used
 	#    empty pools). Done AFTER setup_match so we reseed onto the built board.
-	MapGenerator.seed_tokens(state.board, _token_pools(), seed)
+	MapGenerator.seed_tokens(state.board, _token_pools(), seed, _rally_skip_keys())
+
+	# 2b. Setup rule 7: each player starts with one Warrior + one Scout in their
+	#     Rally Zone (from the supply, NOT from the bag).
+	_place_starting_units(seats)
 
 	# 3. One Agent per seat. Humans get a HumanAgent (awaits taps); everyone else a
 	#    PassAgent placeholder (Section H swaps in HeuristicAgent here).
@@ -89,7 +95,9 @@ func start_match(seats: Array, seed: int) -> void:
 
 	# 4. Internal FSM reused for the non-agent mechanics (guardian move, cleanup,
 	#    victory). Guardian pool from the .tres set.
-	_fsm = RoundFSM.new(state, agents, unit_db, _load_guardian_pool(), seed)
+	_guardian_pool = _load_guardian_pool()
+	_artefact_deck = _load_artefact_deck()
+	_fsm = RoundFSM.new(state, agents, unit_db, _guardian_pool, seed)
 
 	winner = &""
 	_running = false   # not running until begin() is called by the view
@@ -185,6 +193,23 @@ func _apply_recruitment_choice(p, color: StringName, intent: Dictionary) -> Dict
 			return {"choice": "deploy", "deployed": deployed.size()}
 
 
+## Setup rule 7: one Warrior + one Scout from the supply into each Rally Zone.
+## These come from the SUPPLY, so they never touch the player's bag.
+func _place_starting_units(seats: Array) -> void:
+	for spec in seats:
+		var color: StringName = spec.get("color")
+		var p = state.get_player(color)
+		if p == null or p.rally_zone == null:
+			continue
+		var cell: HexCell = state.get_cell(p.rally_zone)
+		if cell == null:
+			continue
+		for unit_id in [&"warrior", &"scout"]:
+			var data = unit_db.get(unit_id, null)
+			if data != null:
+				cell.add_unit(color, {"data": data, "damage": 0})
+
+
 func _place_deployed_units(p, color: StringName, deployed: Array) -> void:
 	if p.rally_zone == null:
 		return
@@ -241,6 +266,7 @@ func _action_phase() -> void:
 						var as_human: bool = color in human_colors
 						var move_intent := intent.duplicate()
 						move_intent["defer_combat"] = as_human
+						move_intent["token_deps"] = _token_deps_for_effects(color)
 						var result: Dictionary = ActionResolver.resolve_move_attack(state, color, move_intent)
 						emit_signal("action_resolved", color, result)
 						if result.get("ok", false) and result.get("combat_pending", false):
@@ -290,8 +316,32 @@ func run_interactive_combat(coord, entering_side) -> void:
 			if defender_side in human_colors:
 				return await combat_assign_provider.call(targets, defender_side)
 			return null
+	# Snapshot Guardians present BEFORE combat so we can detect deaths after pruning —
+	# the interactive path doesn't go through GuardianManager._guardian_attack, so this
+	# is where dead Guardians must be returned to the bag and drop their Old Tech.
+	var guardians_before: Array = cell.units_for(GUARDIAN_OWNER).duplicate()
 	var log: Array = await resolver.resolve_interactive(ctx, provider)
 	ActionResolver.finish_combat(state, cell, log)
+	_handle_guardian_deaths(coord, cell, guardians_before)
+
+
+## After an interactive combat, any Guardian that was present but is now gone (pruned
+## by finish_combat) has died: return it to the bag and drop an Old Tech token where it
+## fell (rulebook Ch.11). Done here because finish_combat is generic and has no bag.
+func _handle_guardian_deaths(coord, cell: HexCell, guardians_before: Array) -> void:
+	if guardians_before.is_empty() or _fsm == null or _fsm.guardians == null:
+		return
+	var still_here: Array = cell.units_for(GUARDIAN_OWNER)
+	for g in guardians_before:
+		var alive := false
+		for s in still_here:
+			if is_same(s, g):
+				alive = true
+				break
+		if not alive:
+			# finish_combat already dropped the Old Tech for this death; here we ONLY
+			# return the Guardian token to the bag (drop_old_tech=false avoids doubling).
+			_fsm.guardians.on_guardian_death(state, g, coord, false)
 
 
 ## When a player's Unit enters the Central Chamber: spawn 1 Guardian there (bag draw,
@@ -423,6 +473,67 @@ func _token_pools() -> Dictionary:
 		fname = dir.get_next()
 	dir.list_dir_end()
 	return pools
+
+
+## Rally Zone hexkeys as a skip-set so seed_tokens never tokenises a Rally Zone.
+func _rally_skip_keys() -> Dictionary:
+	var out := {}
+	for color in state.rally_zones.keys():
+		var rz = state.rally_zones[color]
+		if rz != null:
+			out[rz.key()] = true
+	return out
+
+
+## Rich dependency bundle for TokenEffects (environment/function resolution): seeded
+## rng, the unit db (Gang Press), the live Guardian pool (env Guardian / Control Room),
+## and Action-card draw callbacks. Passed into each move_attack intent.
+func _token_deps_for_effects(color: StringName = &"") -> Dictionary:
+	var deps := {
+		"rng": state.rng,
+		"unit_db": unit_db,
+		"guardian_pool": _guardian_pool,
+	}
+	if state.has_method("draw_action_card"):
+		deps["draw_action"] = Callable(state, "draw_action_card")
+	if state.has_method("discard_action_card"):
+		deps["discard_action"] = Callable(state, "discard_action_card")
+	# Artifact draw: pull a random Artifact card into the acting player's face-down pile.
+	if color != &"":
+		deps["draw_artefact"] = func():
+			return _draw_artefact_for(color)
+	return deps
+
+
+## Draw one random Artifact card into `color`'s face-down Artifact pile (Ancient
+## Artifact token / Function flip). Reproducible via the seeded state rng.
+func _draw_artefact_for(color: StringName) -> String:
+	if _artefact_deck.is_empty():
+		return ""
+	var p = state.get_player(color)
+	if p == null:
+		return ""
+	var card = _artefact_deck[state.rng.randi_range(0, _artefact_deck.size() - 1)]
+	p.artefacts.append(card)
+	return str(card.display_name) if "display_name" in card else "Artifact"
+
+
+## Load the Artifact card pool from data/artefacts.
+func _load_artefact_deck() -> Array:
+	var pool := []
+	var dir := DirAccess.open("res://data/artefacts")
+	if dir == null:
+		return pool
+	dir.list_dir_begin()
+	var fname := dir.get_next()
+	while fname != "":
+		if fname.ends_with(".tres"):
+			var res = load("res://data/artefacts/" + fname)
+			if res != null:
+				pool.append(res)
+		fname = dir.get_next()
+	dir.list_dir_end()
+	return pool
 
 
 func _bucket_token(res, pools: Dictionary) -> void:

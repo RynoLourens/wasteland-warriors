@@ -38,8 +38,8 @@ func _build_ui() -> void:
 
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_CENTER)
-	panel.position = Vector2(-300, -240)
-	panel.custom_minimum_size = Vector2(600, 480)
+	panel.position = Vector2(-340, -240)
+	panel.custom_minimum_size = Vector2(680, 480)
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.12, 0.13, 0.17, 1.0)
 	sb.set_corner_radius_all(14)
@@ -58,8 +58,7 @@ func _build_ui() -> void:
 	col.add_child(_title)
 
 	var scroll := ScrollContainer.new()
-	scroll.custom_minimum_size = Vector2(560, 360)
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.custom_minimum_size = Vector2(640, 360)
 	col.add_child(scroll)
 
 	_list = VBoxContainer.new()
@@ -77,25 +76,82 @@ func _build_ui() -> void:
 
 
 ## Show the readout for one combat `event_log` (an Array of dicts from the resolver).
+## Layout: structural events (combat start, round headers, survivors) are full-width
+## header rows; every event that belongs to a participant (rolls, hits, deaths) goes
+## into THAT side's column, so each combatant's actions read top-to-bottom in its own
+## lane. Columns are created in first-seen order from the combat_start sides list.
 func show_log(event_log: Array) -> void:
 	for c in _list.get_children():
 		c.queue_free()
+	# 1. Determine the participating sides (from combat_start, else discovered).
+	var sides: Array = []
+	for ev in event_log:
+		if ev is Dictionary and ev.get("event", "") == "combat_start":
+			for sd in ev.get("sides", []):
+				if not (sd in sides):
+					sides.append(sd)
+	for ev in event_log:
+		if ev is Dictionary and ev.has("side") and ev.get("side") != null:
+			var sd = ev.get("side")
+			if not (sd in sides):
+				sides.append(sd)
+
+	# 2. Build the column grid: one VBox per side under a coloured header.
+	var columns := HBoxContainer.new()
+	columns.add_theme_constant_override("separation", 14)
+	columns.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_list.add_child(columns)
+	var side_box := {}   # side -> VBoxContainer
+	var col_w: int = int(max(160, 540.0 / float(max(sides.size(), 1)) - 14))
+	for sd in sides:
+		var cv := VBoxContainer.new()
+		cv.add_theme_constant_override("separation", 3)
+		cv.custom_minimum_size = Vector2(col_w, 0)
+		var head := Label.new()
+		head.text = _name(sd)
+		head.add_theme_font_size_override("font_size", 18)
+		head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		head.modulate = _side_color(sd)
+		cv.add_child(head)
+		columns.add_child(cv)
+		side_box[sd] = cv
+
+	# 3. Walk the log: side-bearing events into their column, structural ones as
+	#    full-width header rows below the columns.
+	var had_any := false
 	for ev in event_log:
 		var line: Variant = _format_event(ev)
 		if not (line is Dictionary):
 			continue
+		had_any = true
 		var lbl := Label.new()
-		lbl.text = str(line["text"])
-		lbl.add_theme_font_size_override("font_size", 15)
+		lbl.text = str(line["text"]).strip_edges()
+		lbl.add_theme_font_size_override("font_size", 14)
 		lbl.modulate = line["color"]
 		lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		_list.add_child(lbl)
-	if _list.get_child_count() == 0:
+		var sd = ev.get("side") if ev is Dictionary else null
+		if sd != null and side_box.has(sd):
+			side_box[sd].add_child(lbl)
+		else:
+			# Structural / multi-side row — full width under the columns.
+			lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			_list.add_child(lbl)
+	if not had_any:
 		var none := Label.new()
 		none.text = "(no combat events)"
 		none.modulate = Color(1, 1, 1, 0.6)
 		_list.add_child(none)
 	visible = true
+
+
+## Player/guardian colour for a column header.
+func _side_color(side) -> Color:
+	match str(side):
+		"green": return Color(0.45, 0.85, 0.5)
+		"blue": return Color(0.45, 0.65, 0.95)
+		"red": return Color(0.95, 0.5, 0.5)
+		"guardian": return Color(0.78, 0.6, 0.9)
+		_: return Color(0.9, 0.9, 0.9)
 
 
 ## Map one resolver event dict to a {text, color} line. Returns "" to skip.
