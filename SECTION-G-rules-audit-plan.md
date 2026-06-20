@@ -216,34 +216,42 @@ are unaffected. No live code read `range` before this, so nothing else regressed
 
 ---
 
-# RANGED ATTACK action implemented (2026-06-20)
+# RANGED SUPPORT FIRE implemented (2026-06-20, REPLACED the standalone action)
 
-The Ch.11 rule *"When you Activate a space containing Ranged Units that haven't moved, those
-Units may Attack any Units within Range without moving into that space"* is now a real action
-(it had no implementation — `range` had no readers before the data fix above).
+Corin redesigned ranged combat: Ranged Units fire INTO an existing melee as **supporting
+fire**, not as a standalone one-sided action. The earlier `resolve_ranged_attack` standalone
+action was **removed** (from combat_resolver, action_resolver, round_fsm, game_controller,
+agent doc, and its 4 tests).
 
-**It is ONE-SIDED:** the firing player's ranged Units roll; the target does NOT retaliate
-(distinct from shared-space melee). Ignores line of sight.
+**Flow:** Move-and-Attack into an enemy space → before combat resolves, the player is asked
+to fire any Ranged Units → selected shooters add their Attack dice to the attacking side
+**every round** → shooters take **zero return fire** (never co-located with the enemy) →
+each firing Unit's space is **Activated**.
 
-- `CombatResolver.resolve_ranged_attack(context)` — NEW public method: rolls the attacker
-  Combatants via `_roll_side` (so crit/hit profiles, Darkness on the target, and Sunstone all
-  apply), assigns hits to the target defenders via `_assign_and_apply` (honours the target's
-  control/Shield-Drone/stacking defense), checks deaths. Reuses all the tested building blocks.
-- `ActionResolver.resolve_ranged_attack(state, color, intent)` — validates: ranged Units
-  (`range >= 1`) present in the activated space; target within max Range (hex distance, no
-  LoS); target holds enemy forces. Activates the firing space, fires, prunes via
-  `finish_combat` (Old Tech still drops for Guardians killed at range).
-- `ActionResolver.ranged_targets_for(state, color, activate)` — UI/AI helper listing legal
-  target coords (enemy spaces within range).
-- Wired into the action loop in **both** `round_fsm.gd` (headless) and `game_controller.gd`
-  (live, immediate — no deferred-combat window). Agent intent: `{"type": "ranged_attack",
-  "activate": HexCoord, "target": HexCoord}`.
-- Tests: fires-without-moving (shooter stays + untouched, target dies), out-of-range rejected
-  (no activation), melee can't, targeting helper.
+**Eligibility** (`ActionResolver.eligible_ranged_shooters(state, color, combat_coord, moved)`):
+your Unit has `range >= 1`; hex distance to the combat space ≤ its Range (no LoS); its space
+is not Activated by you; its space has no enemy Units; Manstopper (`extra_setup_move`) only if
+it moved ≤1 space this Activation (forward-compatible `moved_this_activation` seam — within one
+move-attack every mover lands in the combat space and is auto-excluded anyway).
 
-**UI follow-up (⬜):** the board UI needs a "ranged fire" affordance (highlight a space with
-your ranged Units → highlight in-range enemy spaces via `ranged_targets_for` → emit the
-intent). Engine + AI path are complete.
+**Resolver:** shooters ride in a separate `support_shooters`/`support_side` context pool —
+NOT in `combatants`/`sides` — so they only add dice (via `_roll_side`, every round) and are
+**never targeted, never death-checked, never pruned**. Darkness on the combat space applies
+to their pool; Sunstone raises their floor to 6 (they're ranged). Hits fold into
+`hits_by_side[entering_side]` before the existing distribution loop (both sync + async rounds).
+
+**Threading:** `build_combat_context(..., support_shooters)` converts them to Combatants;
+`activate_shooter_spaces(...)` flips their tokens up front. AI/headless (`round_fsm`,
+`resolve_move_attack` sync branch) auto-fire ALL eligible via `auto_support_fire`; the human
+path surfaces `eligible_shooters` in the combat-pending result and `game_controller`
+`_prompt_support_shooters` → UI `support_fire_provider`. Tests pass an explicit
+`support_shooters` list which takes precedence.
+
+**UI (`board_view.gd`):** `_support_fire_provider` modal — faint orange glow (`COL_SUPPORT`)
+on eligible shooter spaces + a toggle list with FIRE / NONE.
+
+**Tests:** eligibility filtering (range/activated/enemy/melee), Manstopper moved-gate, shooters
+add dice + take no return fire, Sunstone limits shooters to 6s.
 
 ## Verification — Corin runs locally (GUT can't run in the sandbox)
 ```

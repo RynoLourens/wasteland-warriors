@@ -57,6 +57,8 @@ var _space_attack_penalty: int = 0   ## Darkness env token (Ch.13): -1 Attack to
 var _placed_sticky_bombs: int = 0    ## bombs LEFT on the space (each rolls PLACED_BOMB_DICE at entrant).
 const PLACED_BOMB_DICE := 2          ## "roll two Attack dice" per placed Sticky Bomb (Ch.11).
 var _sunstone_active: bool = false   ## Sunstone Fragments: attackers vs this space hit only on 6.
+var _support_shooters: Array = []    ## Ranged Units firing INTO this combat from afar (Ch.11).
+var _support_side: StringName = &""  ## the side those shooters fire FOR (the entering side).
 
 
 ## The ONE place a d6 is produced. Forced faces (tests) drain first, then rng.
@@ -132,6 +134,8 @@ func resolve(context: Dictionary) -> Array:
 	_space_attack_penalty = int(context.get("space_attack_penalty", 0))
 	_placed_sticky_bombs = int(context.get("sticky_bomb_count", 0))
 	_sunstone_active = bool(context.get("sunstone_active", false))
+	_support_shooters = (context.get("support_shooters", []) as Array).duplicate()
+	_support_side = context.get("support_side", &"")
 
 	var sides: Array = context.get("sides", [])
 	var combatants: Dictionary = context.get("combatants", {})
@@ -183,6 +187,8 @@ func resolve_interactive(context: Dictionary, round_provider: Callable) -> Array
 	_space_attack_penalty = int(context.get("space_attack_penalty", 0))
 	_placed_sticky_bombs = int(context.get("sticky_bomb_count", 0))
 	_sunstone_active = bool(context.get("sunstone_active", false))
+	_support_shooters = (context.get("support_shooters", []) as Array).duplicate()
+	_support_side = context.get("support_side", &"")
 
 	var sides: Array = context.get("sides", [])
 	var combatants: Dictionary = context.get("combatants", {})
@@ -250,6 +256,13 @@ func _simultaneous_round_async(round_index: int, sides: Array, combatants: Dicti
 	for side in sides:
 		hits_by_side[side] = _roll_side(side, global_die_penalty,
 			combatants.get(side, []), rng, log)
+	# Ranged SUPPORT FIRE (Ch.11): remote Ranged Units add their dice to the entering side
+	# EVERY round. They roll as their own pool (Darkness penalty applies to the pool again;
+	# Sunstone raises their floor to 6 since they all have range >= 1). They are never in
+	# `combatants`, so the defender can never assign hits back to them (immune).
+	if _support_side != &"" and not _support_shooters.is_empty():
+		var support_hits: int = _roll_side(_support_side, global_die_penalty, _support_shooters, rng, log)
+		hits_by_side[_support_side] = int(hits_by_side.get(_support_side, 0)) + support_hits
 	for attacker_side in sides:
 		var hits: int = hits_by_side[attacker_side]
 		if hits <= 0:
@@ -395,6 +408,13 @@ func _simultaneous_round(round_index: int, sides: Array, combatants: Dictionary,
 	for side in sides:
 		hits_by_side[side] = _roll_side(side, global_die_penalty,
 			combatants.get(side, []), rng, log)
+	# Ranged SUPPORT FIRE (Ch.11): remote Ranged Units add their dice to the entering side
+	# EVERY round. They roll as their own pool (Darkness penalty applies to the pool again;
+	# Sunstone raises their floor to 6 since they all have range >= 1). They are never in
+	# `combatants`, so the defender can never assign hits back to them (immune).
+	if _support_side != &"" and not _support_shooters.is_empty():
+		var support_hits: int = _roll_side(_support_side, global_die_penalty, _support_shooters, rng, log)
+		hits_by_side[_support_side] = int(hits_by_side.get(_support_side, 0)) + support_hits
 
 	# ASSIGN + APPLY: defender assigns the hits scored AGAINST them. We compute
 	# all assignments first (against the pre-round live set), then apply.
@@ -768,61 +788,6 @@ func _num(data, prop: String, default: int) -> int:
 	var v = data.get(prop)
 	return int(v) if v != null else default
 
-## ----------------------------------------------------------------------------
-##  Ranged attack (Ch.11) — ONE-SIDED: ranged Units fire at a target space WITHOUT
-##  moving in, and the target does NOT fire back. Distinct from the shared-space
-##  simultaneous combat that resolve() handles.
-## ----------------------------------------------------------------------------
-##
-## `context` keys:
-##   attackers     : Array[Combatant]  — the firing ranged Units (already built)
-##   defenders     : Array[Combatant]  — Units in the target space
-##   defender_side : StringName        — owner colour of the target Units
-##   controller    : StringName or &"" — who Controls the TARGET space (+1 def)
-##   extra_defense : { side -> int }   — stacking buffs on the target side
-##   sunstone_active : bool            — target under Sunstone (ranged hit only on 6)
-##   space_attack_penalty : int        — Darkness on the TARGET space (-1 per attacker pool)
-##   assign_policy : Callable or null  — defender hit-assignment policy
-##   rng           : RandomNumberGenerator
-##
-## Returns the same event-log Array as resolve(). Damage is written onto the
-## defenders' live unit dicts (via Combatant), so the caller prunes afterward.
-func resolve_ranged_attack(context: Dictionary) -> Array:
-	var rng: RandomNumberGenerator = context.get("rng")
-	assert(rng != null, "resolve_ranged_attack requires a seeded rng")
-	_rng = rng
-	_forced_faces = (context.get("forced_faces", []) as Array).duplicate()
-	_reroll_budget = {}
-	_extra_attack_dice = {}
-	_placed_sticky_bombs = 0
-	_sunstone_active = bool(context.get("sunstone_active", false))
-	_space_attack_penalty = int(context.get("space_attack_penalty", 0))
-
-	var attackers: Array = context.get("attackers", [])
-	var defenders: Array = context.get("defenders", [])
-	var defender_side: StringName = context.get("defender_side", &"")
-	var controller: StringName = context.get("controller", &"")
-	var extra_defense: Dictionary = context.get("extra_defense", {})
-	var assign_policy: Callable = context.get("assign_policy", Callable())
-
-	var log: Array = []
-	log.append({"event": "ranged_attack_start", "attackers": attackers.size(),
-		"target_side": defender_side})
-
-	# Roll the attackers as a single firing side. _roll_side honours each unit's
-	# crit/hit profile, drains the Darkness penalty, and (since _sunstone_active is set)
-	# raises ranged units' hit floor to 6 when the target is marked.
-	var penalty := _global_attack_penalty([&"_ranged"], {&"_ranged": attackers}) + _space_attack_penalty
-	var hits := _roll_side(&"_ranged", penalty, attackers, rng, log)
-	if hits > 0:
-		_assign_and_apply(defender_side, hits, defenders, controller, extra_defense,
-			assign_policy, log)
-	_check_deaths([defender_side], {defender_side: defenders}, log)
-	log.append({"event": "ranged_attack_end",
-		"survivors": _survivor_summary([defender_side], {defender_side: defenders})})
-	return log
-
-
 # ---------------------------------------------------------------------------
 #  Convenience builder for callers / tests
 # ---------------------------------------------------------------------------
@@ -835,6 +800,10 @@ static func combatants_from_units(units_by_owner: Dictionary) -> Dictionary:
 	for owner in units_by_owner.keys():
 		var arr: Array = []
 		for u in units_by_owner[owner]:
+			# Skip malformed units with no data (e.g. a unit_db miss) — they can't fight and
+			# would crash the flag/num readers. A real game never hits this; it's a guard.
+			if u.get("data") == null:
+				continue
 			arr.append(Combatant.new(u["data"], owner, u))
 		out[owner] = arr
 	return out

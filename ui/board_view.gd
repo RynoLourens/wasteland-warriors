@@ -26,6 +26,7 @@ const COL_RALLY := Color(0.26, 0.36, 0.30)
 const COL_EDGE := Color(0.12, 0.12, 0.14)
 const COL_EXIT := Color(0.78, 0.74, 0.55)          # open-edge markers
 const COL_HILITE := Color(0.30, 0.70, 0.95, 0.55)  # reachable tint
+const COL_SUPPORT := Color(0.96, 0.62, 0.16, 0.50) # eligible Ranged support-fire glow
 const COL_ACTIVATE := Color(0.95, 0.78, 0.25, 0.85)
 const COL_STAGED := Color(0.98, 0.85, 0.20)        # staged-to-move unit outline/badge
 const TOKEN_HIT_PAD := 8.0                          # padding on unit-token click targets
@@ -130,6 +131,8 @@ func _ready() -> void:
 		GameController.combat_round_provider = _combat_round_provider
 		# Interactive hit assignment: human defenders choose which Unit takes a hit.
 		GameController.combat_assign_provider = _combat_assign_provider
+		# Ranged support fire: human picks which Ranged Units fire INTO a combat (Ch.11).
+		GameController.support_fire_provider = _support_fire_provider
 
 	# Section F: GameController (autoload) owns match setup + the round-loop
 	# coroutine. If a match is already running (started from the SetupScreen), just
@@ -1870,6 +1873,87 @@ func _combat_assign_provider(targets: Array, defender_side: StringName):
 	return _combat_pick_result.get("combatant", null)
 
 
+## Ranged SUPPORT FIRE prompt (Ch.11). `eligible` is [{coord,unit}]. The eligible shooter
+## spaces glow faintly on the board; a modal lists each as a toggle, with FIRE / NONE.
+## Returns the chosen subset of `eligible`. Mirrors the combat-card modal latch pattern.
+func _support_fire_provider(color: StringName, combat_coord, eligible: Array) -> Array:
+	if eligible.is_empty():
+		return []
+	# Faint glow on every eligible shooter space.
+	for e in eligible:
+		if e.get("coord") is HexCoord:
+			_add_hilite_colored(e["coord"], COL_SUPPORT)
+	var chosen_flags: Array = []
+	for _e in eligible:
+		chosen_flags.append(false)
+	_combat_pick_done = false
+	_combat_pick_result = {}
+	var layer := CanvasLayer.new()
+	layer.layer = 27
+	layer.name = "SupportFireWindow"
+	var dim := ColorRect.new()
+	dim.color = Color(0.05, 0.05, 0.08, 0.88)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer.add_child(dim)
+	var col_box := VBoxContainer.new()
+	col_box.set_anchors_preset(Control.PRESET_CENTER)
+	col_box.position = Vector2(-300, -260)
+	col_box.add_theme_constant_override("separation", 10)
+	layer.add_child(col_box)
+	var title := Label.new()
+	title.text = "%s — fire with any Ranged Units? This Activates their space." % str(color).to_upper()
+	title.add_theme_font_size_override("font_size", 21)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.custom_minimum_size = Vector2(600, 0)
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col_box.add_child(title)
+	# One toggle per eligible shooter.
+	for i in range(eligible.size()):
+		var entry = eligible[i]
+		var u = entry["unit"]
+		var d = u.get("data")
+		var uid = d.id if d != null else &"?"
+		var rng_v: int = (d.range if d != null else 0)
+		var c: HexCoord = entry["coord"]
+		var b := Button.new()
+		b.toggle_mode = true
+		b.text = "%s  (Range %d)  @ (%d,%d)" % [
+			UNIT_DISPLAY.get(uid, str(uid).capitalize()), rng_v, c.q, c.r]
+		b.custom_minimum_size = Vector2(600, 48)
+		b.add_theme_font_size_override("font_size", 16)
+		var idx := i
+		b.toggled.connect(func(pressed): chosen_flags[idx] = pressed)
+		col_box.add_child(b)
+	var fire := Button.new()
+	fire.text = "FIRE selected"
+	fire.custom_minimum_size = Vector2(600, 50)
+	fire.add_theme_font_size_override("font_size", 18)
+	fire.pressed.connect(func():
+		layer.queue_free()
+		_combat_pick_result = {"go": true}
+		_combat_pick_done = true)
+	col_box.add_child(fire)
+	var none := Button.new()
+	none.text = "NONE (skip)"
+	none.custom_minimum_size = Vector2(600, 46)
+	none.add_theme_font_size_override("font_size", 17)
+	none.pressed.connect(func():
+		layer.queue_free()
+		_combat_pick_result = {"go": false}
+		_combat_pick_done = true)
+	col_box.add_child(none)
+	add_child(layer)
+	while not _combat_pick_done:
+		await get_tree().process_frame
+	_clear_hilites()
+	var out: Array = []
+	if _combat_pick_result.get("go", false):
+		for i in range(eligible.size()):
+			if chosen_flags[i]:
+				out.append(eligible[i])
+	return out
+
+
 ## Finalise an action intent: end the turn, hide UI, submit to our HumanAgent
 ## (the GameController is the single path into the engine).
 func _submit_action_intent(intent: Dictionary) -> void:
@@ -1929,6 +2013,16 @@ func _clear_hilites() -> void:
 	for child in _hilite_root.get_children():
 		child.queue_free()
 	_hilites.clear()
+
+
+## Like _add_hilite but with an explicit colour (used for the Ranged support-fire glow).
+func _add_hilite_colored(coord: HexCoord, col: Color) -> void:
+	var poly := Polygon2D.new()
+	poly.polygon = _hex_corners()
+	poly.color = col
+	poly.position = _hex_to_pixel(coord.q, coord.r)
+	_hilite_root.add_child(poly)
+	_hilites[coord.key()] = poly
 
 
 # ---------------------------------------------------------------------------

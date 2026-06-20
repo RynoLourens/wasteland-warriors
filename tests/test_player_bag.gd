@@ -11,9 +11,12 @@ func _rng(seed: int) -> RandomNumberGenerator:
 func test_starting_bag_composition() -> void:
 	var p := Player.new(&"green")
 	p.load_starting_bag()
-	assert_eq(p.bag_size(), 12, "starting bag = 12")
-	assert_eq(p.coward_count(), 6, "6 cowards")
+	assert_eq(p.bag_size(), 20, "starting bag = 20")
+	assert_eq(p.coward_count(), 8, "8 cowards")
 	assert_eq(p.count_in_bag(&"warrior"), 6, "6 warriors")
+	assert_eq(p.count_in_bag(&"gunner"), 2, "2 gunners")
+	assert_eq(p.count_in_bag(&"heavy"), 2, "2 heavies")
+	assert_eq(p.count_in_bag(&"scout"), 2, "2 scouts")
 
 
 func test_draw_removes_without_replacement() -> void:
@@ -21,14 +24,14 @@ func test_draw_removes_without_replacement() -> void:
 	p.load_starting_bag()
 	var drawn := p.draw_from_bag(3, _rng(1))
 	assert_eq(drawn.size(), 3, "drew 3")
-	assert_eq(p.bag_size(), 9, "bag shrank by 3 (no replacement)")
+	assert_eq(p.bag_size(), 17, "bag shrank by 3 (no replacement)")
 
 
 func test_draw_capped_at_bag_size() -> void:
 	var p := Player.new(&"green")
 	p.load_starting_bag()
 	var drawn := p.draw_from_bag(99, _rng(1))
-	assert_eq(drawn.size(), 12, "can't draw more than the bag holds")
+	assert_eq(drawn.size(), 20, "can't draw more than the bag holds")
 	assert_eq(p.bag_size(), 0, "bag emptied")
 
 
@@ -77,8 +80,8 @@ func test_recruit_adds_to_bag() -> void:
 	var p := Player.new(&"green")
 	p.load_starting_bag()
 	p.recruit([&"warrior", &"warrior", &"scout"])
-	assert_eq(p.bag_size(), 15, "recruit added 3 units")
-	assert_eq(p.count_in_bag(&"scout"), 1, "scout is in the bag")
+	assert_eq(p.bag_size(), 23, "recruit added 3 units (20 + 3)")
+	assert_eq(p.count_in_bag(&"scout"), 3, "2 starting scouts + 1 recruited")
 
 
 func test_win_condition() -> void:

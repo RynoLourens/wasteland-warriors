@@ -44,14 +44,20 @@ func _init(_color: StringName, _is_ai: bool = true) -> void:
 	control_set = {}
 
 
-## Standard starting bag (rulebook Ch.4, with the reviewed change):
-## 6 Cowards + 6 Warriors.
+## Standard starting bag (rulebook Ch.4):
+## 8 Cowards + 6 Warriors + 2 Gunners + 2 Heavies + 2 Scouts (20 total).
 func load_starting_bag() -> void:
 	bag.clear()
-	for _i in range(6):
+	for _i in range(8):
 		bag.append(COWARD)
 	for _i in range(6):
 		bag.append(&"warrior")
+	for _i in range(2):
+		bag.append(&"gunner")
+	for _i in range(2):
+		bag.append(&"heavy")
+	for _i in range(2):
+		bag.append(&"scout")
 
 
 func bag_size() -> int:

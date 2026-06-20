@@ -20,3 +20,4 @@ signal turn_passed(player)
 # --- Spawns & objectives ---
 signal guardian_spawned(guardian, coord)
 signal old_tech_captured(player, coord)
+signal guardian_ranged_attack(coord, hits)  ## Arachnid fired at `coord` (Ch.12)

@@ -265,78 +265,120 @@ func test_sunstone_limits_ranged_not_melee():
 	assert_gt(melee_total, ranged_total,
 		"melee (unaffected) out-hits ranged (limited to 6s) under Sunstone")
 
-
 # =============================================================================
-#  Ranged attack (Ch.11) — fire without moving in; range-gated; melee can't
+#  Ranged SUPPORT FIRE (Ch.11) — shooters add dice into a melee, take no return fire
 # =============================================================================
 
-func test_ranged_attack_fires_without_moving():
+func test_eligible_ranged_shooters_filters_correctly():
 	var st := FakeState.new()
-	st.rng.seed = 5
-	var shooter_cell := _cell(Vector2i(0, 0))
-	# A Gunner (Range 1) with lots of dice so it reliably scores a hit at this seed.
-	shooter_cell.add_unit(&"green", _unit(&"gunner", 1, 6, 1))
-	var target_cell := _cell(Vector2i(1, 0))   # distance 1 — in range
-	target_cell.add_unit(&"red", _unit(&"warrior", 1, 2, 0))
-	st.board[shooter_cell.coord.key()] = shooter_cell
-	st.board[target_cell.coord.key()] = target_cell
-
-	var res := ActionResolver.resolve_ranged_attack(st, &"green", {
-		"activate": shooter_cell.coord, "target": target_cell.coord,
-	})
-	assert_true(res.ok, "ranged attack resolved: " + str(res.get("reason")))
-	# Shooter never moved: still in its own space, now Activated.
-	assert_eq(shooter_cell.units_for(&"green").size(), 1, "shooter stayed put")
-	assert_true(shooter_cell.has_faceup_activation(&"green"), "firing space Activated")
-	# The defending warrior (defense 1) should have died to the 6-dice volley.
-	assert_eq(target_cell.units_for(&"red").size(), 0, "target warrior killed by ranged fire")
-	# Attacker takes NO retaliation (one-sided).
-	assert_eq(shooter_cell.units_for(&"green")[0].get("damage", 0), 0, "shooter untouched")
-
-
-func test_ranged_attack_rejected_out_of_range():
-	var st := FakeState.new()
-	var shooter_cell := _cell(Vector2i(0, 0))
-	shooter_cell.add_unit(&"green", _unit(&"gunner", 1, 1, 1))   # Range 1
-	var far := _cell(Vector2i(2, 0))                              # distance 2 — out of range
-	far.add_unit(&"red", _unit(&"warrior", 1, 2, 0))
-	st.board[shooter_cell.coord.key()] = shooter_cell
+	# Combat at C = (0,0): green melee vs red.
+	var combat := _cell(Vector2i(0, 0))
+	combat.add_unit(&"green", _unit(&"warrior", 1, 2, 0))
+	combat.add_unit(&"red", _unit(&"warrior", 1, 2, 0))
+	st.board[combat.coord.key()] = combat
+	# Valid: a green Gunner (Range 1) adjacent, unactivated, no enemy.
+	var ok_cell := _cell(Vector2i(1, 0))
+	ok_cell.add_unit(&"green", _unit(&"gunner", 1, 1, 1))
+	st.board[ok_cell.coord.key()] = ok_cell
+	# Out of range: Gunner (Range 1) two spaces away.
+	var far := _cell(Vector2i(2, 0))
+	far.add_unit(&"green", _unit(&"gunner", 1, 1, 1))
 	st.board[far.coord.key()] = far
-	var res := ActionResolver.resolve_ranged_attack(st, &"green", {
-		"activate": shooter_cell.coord, "target": far.coord,
-	})
-	assert_false(res.ok, "out-of-range ranged attack rejected")
-	assert_false(shooter_cell.has_faceup_activation(&"green"), "no activation on a rejected action")
+	# Activated space: excluded.
+	var act := _cell(Vector2i(0, 1))
+	act.add_unit(&"green", _unit(&"gunner", 1, 1, 1))
+	act.set_token_state(&"green", HexCell.TokenState.ACTIVE)
+	st.board[act.coord.key()] = act
+	# Enemy co-located: excluded.
+	var enemied := _cell(Vector2i(-1, 1))   # distance 1 from (0,0)
+	enemied.add_unit(&"green", _unit(&"gunner", 1, 1, 1))
+	enemied.add_unit(&"red", _unit(&"warrior", 1, 1, 0))
+	st.board[enemied.coord.key()] = enemied
+	# Melee (Range 0) adjacent: excluded.
+	var melee := _cell(Vector2i(0, -1))
+	melee.add_unit(&"green", _unit(&"warrior", 1, 2, 0))
+	st.board[melee.coord.key()] = melee
+
+	var elig := ActionResolver.eligible_ranged_shooters(st, &"green", combat.coord, {})
+	assert_eq(elig.size(), 1, "exactly one eligible shooter")
+	assert_true(elig[0]["coord"].equals(ok_cell.coord), "the adjacent in-range Gunner")
 
 
-func test_melee_cannot_ranged_attack():
+func test_manstopper_shooter_excluded_if_moved_more_than_one():
 	var st := FakeState.new()
-	var melee_cell := _cell(Vector2i(0, 0))
-	melee_cell.add_unit(&"green", _unit(&"warrior", 1, 2, 0))   # Range 0
-	var target_cell := _cell(Vector2i(1, 0))
-	target_cell.add_unit(&"red", _unit(&"warrior", 1, 2, 0))
-	st.board[melee_cell.coord.key()] = melee_cell
-	st.board[target_cell.coord.key()] = target_cell
-	var res := ActionResolver.resolve_ranged_attack(st, &"green", {
-		"activate": melee_cell.coord, "target": target_cell.coord,
-	})
-	assert_false(res.ok, "melee-only space cannot make a ranged attack")
+	var combat := _cell(Vector2i(0, 0))
+	combat.add_unit(&"green", _unit(&"warrior", 1, 2, 0))
+	combat.add_unit(&"red", _unit(&"warrior", 1, 2, 0))
+	st.board[combat.coord.key()] = combat
+	var mcell := _cell(Vector2i(1, 0))
+	var manstopper := _unit(&"manstopper", 1, 2, 1)
+	manstopper["data"].extra_setup_move = true
+	mcell.add_unit(&"green", manstopper)
+	st.board[mcell.coord.key()] = mcell
+	# Moved 2 this activation -> excluded.
+	var moved2 := {"entries": [{"unit": manstopper, "steps": 2}]}
+	assert_eq(ActionResolver.eligible_ranged_shooters(st, &"green", combat.coord, moved2).size(),
+		0, "manstopper that moved 2 is excluded")
+	# Moved 1 (or absent) -> eligible.
+	var moved1 := {"entries": [{"unit": manstopper, "steps": 1}]}
+	assert_eq(ActionResolver.eligible_ranged_shooters(st, &"green", combat.coord, moved1).size(),
+		1, "manstopper that moved 1 is eligible")
+	assert_eq(ActionResolver.eligible_ranged_shooters(st, &"green", combat.coord, {}).size(),
+		1, "manstopper that didn't move is eligible")
 
 
-func test_ranged_targets_helper_lists_in_range_enemies():
-	var st := FakeState.new()
-	var shooter_cell := _cell(Vector2i(0, 0))
-	shooter_cell.add_unit(&"green", _unit(&"gunner", 1, 1, 1))   # Range 1
-	var adj_enemy := _cell(Vector2i(1, 0))
-	adj_enemy.add_unit(&"red", _unit(&"warrior"))
-	var far_enemy := _cell(Vector2i(2, 0))
-	far_enemy.add_unit(&"red", _unit(&"warrior"))
-	var adj_empty := _cell(Vector2i(0, 1))
-	st.board[shooter_cell.coord.key()] = shooter_cell
-	st.board[adj_enemy.coord.key()] = adj_enemy
-	st.board[far_enemy.coord.key()] = far_enemy
-	st.board[adj_empty.coord.key()] = adj_empty
-	var targets := ActionResolver.ranged_targets_for(st, &"green", shooter_cell.coord)
-	# Only the adjacent ENEMY space qualifies (far is out of range; empty has no enemy).
-	assert_eq(targets.size(), 1, "exactly one valid ranged target")
-	assert_true(targets[0].equals(adj_enemy.coord), "the in-range enemy space")
+func _support_ctx(seed: int, shooter_attack: int, sunstone: bool, darkness: bool) -> Array:
+	# Green warrior (tanky) vs red warrior (tanky), plus a green Gunner shooter firing IN.
+	var resolver := CombatResolver.new()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed
+	var shooter := _unit(&"gunner", 9, shooter_attack, 1)
+	var shooter_combatants: Array = CombatResolver.combatants_from_units({&"green": [shooter]})[&"green"]
+	var ctx := {
+		"sides": [&"green", &"red"],
+		"combatants": CombatResolver.combatants_from_units({
+			&"green": [_unit(&"warrior", 99, 1)],
+			&"red": [_unit(&"warrior", 99, 1)],
+		}),
+		"controller": &"",
+		"extra_defense": {},
+		"entering_side": &"green",
+		"rng": rng,
+		"support_shooters": shooter_combatants,
+		"support_side": &"green",
+		"sunstone_active": sunstone,
+		"space_attack_penalty": (1 if darkness else 0),
+	}
+	return [resolver.resolve(ctx), shooter]
+
+
+func test_support_shooters_add_dice_and_take_no_return_fire():
+	var pair := _support_ctx(11, 6, false, false)
+	var log: Array = pair[0]
+	var shooter = pair[1]
+	# Shooter dice appear in the log under the entering side.
+	var shooter_dice := 0
+	for e in log:
+		if e.get("event") == "die" and e.get("side") == &"green" and e.get("unit") == &"gunner":
+			shooter_dice += 1
+	assert_gt(shooter_dice, 0, "shooter contributed attack dice")
+	# Shooter never takes damage (never in the combat cell; never targeted).
+	assert_eq(shooter.get("damage", 0), 0, "support shooter takes no return fire")
+
+
+func test_support_shooters_respect_sunstone():
+	# Same seed: a Gunner shooter scores fewer hits when the combat space is Sunstone-marked
+	# (ranged -> hit only on 6). Average over seeds.
+	var marked := 0
+	var unmarked := 0
+	for seed in [1, 2, 3, 4, 5, 6, 7, 8]:
+		var u: Array = _support_ctx(seed, 6, false, false)[0]
+		var m: Array = _support_ctx(seed, 6, true, false)[0]
+		for e in u:
+			if e.get("event") == "die" and e.get("unit") == &"gunner" and e.get("hit"):
+				unmarked += 1
+		for e in m:
+			if e.get("event") == "die" and e.get("unit") == &"gunner" and e.get("hit"):
+				marked += 1
+	assert_gt(unmarked, marked, "Sunstone limits support shooters to 6s")
+

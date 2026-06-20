@@ -180,10 +180,28 @@ func _move_one_guardian(state, from_coord: HexCoord, unit: Dictionary) -> void:
 		next_cell.add_unit(GUARDIAN_OWNER, unit)
 		_emit(state, "unit_moved", [unit, cur, next])
 		cur = next
-		# If the space now holds player Units, attack and STOP.
+		# If the space now holds player Units, attack. The Ox (attacks_on_move) rolls its
+		# dice at them and KEEPS MOVING (ploughing through); every other Guardian STOPS.
 		if _has_player_units(next_cell):
-			_guardian_attack(state, next_cell, next)
-			break
+			var attacks_through: bool = data != null and data.get("attacks_on_move")
+			if attacks_through:
+				_guardian_attack(state, next_cell, next)
+				# The Ox may have been the only force and survived; if the cell still holds
+				# the Ox, continue moving. If the Ox died (unlikely on its own turn) the
+				# guardian was pruned from the cell — stop.
+				if not next_cell.units_for(GUARDIAN_OWNER).has(unit):
+					break
+				# Continue the loop (do NOT break) so the Ox keeps stepping.
+			else:
+				_guardian_attack(state, next_cell, next)
+				break
+
+	# Arachnid (range >= 2): AFTER it moves, it Attacks one space within Range (Ch.12).
+	# "Shoots around corners" => no line of sight; range is hex distance. This fires in
+	# ADDITION to any melee it triggered above (it shoots even if it didn't stop on Units).
+	var rng_v: int = data.range if data != null else 1
+	if rng_v >= 2:
+		_arachnid_ranged_attack(state, cur, unit, rng_v)
 
 
 ## Pick a RANDOM next hex one doorway step from `from_coord` (rulebook: the die roll
@@ -204,6 +222,121 @@ func _step_random(state, from_coord: HexCoord, can_blink: bool):
 	return neighbours[idx]
 
 
+## Arachnid's after-move ranged attack (Ch.12). From `from_coord`, find every board space
+## within `rng_v` hex distance that holds player Units. If none, nothing happens. If several,
+## roll the seeded rng to choose ONE. Roll the Arachnid's Attack dice at that space; if it
+## holds Units from multiple players, divide the hits EVENLY across those players, rounded UP.
+func _arachnid_ranged_attack(state, from_coord: HexCoord, unit: Dictionary, rng_v: int) -> void:
+	var data = unit["data"]
+	# Candidate target spaces: any cell within range holding player Units (not the Arachnid's
+	# own space — it's a ranged shot at a DIFFERENT space).
+	var targets: Array = []
+	for k in state.board.keys():
+		var coord: HexCoord = HexCoord.from_key(k)
+		if coord.equals(from_coord):
+			continue
+		if from_coord.distance_to(coord) > rng_v:
+			continue
+		var cell: HexCell = state.board[k]
+		if cell != null and _has_player_units(cell):
+			targets.append(coord)
+	if targets.is_empty():
+		return
+	# Choose one deterministically-at-random (sort for stability, then seeded pick).
+	targets.sort_custom(func(a, b): return a.key() < b.key())
+	var pick: HexCoord = targets[rng.randi_range(0, targets.size() - 1)]
+	var target_cell: HexCell = state.get_cell(pick)
+	if target_cell == null:
+		return
+	# Which players have Units there?
+	var player_sides: Array = []
+	for owner in target_cell.units.keys():
+		if owner != GUARDIAN_OWNER and not target_cell.units[owner].is_empty():
+			player_sides.append(owner)
+	if player_sides.is_empty():
+		return
+	# Roll the Arachnid's Attack dice ONCE (its attack_dice; 4/5/6 hit, 6 crit-chains).
+	var dice: int = data.attack_dice if data != null else 1
+	var total_hits: int = _roll_guardian_dice(dice, data)
+	if total_hits <= 0:
+		_emit(state, "guardian_ranged_attack", [pick, 0])
+		return
+	# Divide hits evenly across the players present, rounded UP (Ch.12). Each player's
+	# defender assigns its own share minimise-losses; prune the dead.
+	var n: int = player_sides.size()
+	var per: int = int(ceil(float(total_hits) / float(n)))
+	for side in player_sides:
+		_apply_hits_to_side(target_cell, side, per)
+	_prune_dead_and_handle_guardians(state, target_cell, pick)
+	_emit(state, "guardian_ranged_attack", [pick, total_hits])
+
+
+## Roll `dice` Attack dice with this Guardian's crit/hit profile (4/5/6 hit, crit_face grants
+## a bonus die that chains; hit_only_on overrides the hit floor). Mirrors CombatResolver's
+## rule so guardian ranged dice behave identically. Bounded against a pathological rng.
+func _roll_guardian_dice(dice: int, data) -> int:
+	if dice <= 0:
+		return 0
+	var crit_face: int = 6
+	if data != null and int(data.get("crit_on")) > 0:
+		crit_face = int(data.get("crit_on"))
+	var hit_floor: int = 4
+	if data != null and int(data.get("hit_only_on")) > 0:
+		hit_floor = int(data.get("hit_only_on"))
+	var hits: int = 0
+	var pending: int = dice
+	var guard: int = 0
+	while pending > 0 and guard < 10000:
+		pending -= 1
+		guard += 1
+		var face: int = rng.randi_range(1, 6)
+		if face >= hit_floor:
+			hits += 1
+		if face >= crit_face:
+			pending += 1
+	return hits
+
+
+## Assign `hits` to `side`'s Units in `cell`, minimise-losses (stack onto the unit nearest
+## death), against EFFECTIVE Defense (base + controlled-ground/drone). Writes damage onto the
+## live unit dicts; pruning is done by the caller.
+func _apply_hits_to_side(cell: HexCell, side: StringName, hits: int) -> void:
+	var bonus: int = _ground_defense_bonus(cell, side)
+	var remaining: int = hits
+	while remaining > 0:
+		var arr: Array = cell.units_for(side)
+		var best_i: int = -1
+		var best_remaining: int = 1 << 30
+		for i in range(arr.size()):
+			var u = arr[i]
+			var def: int = (u["data"].defense if u["data"] != null else 1) + bonus
+			var rem: int = def - int(u.get("damage", 0))
+			if rem > 0 and rem < best_remaining:
+				best_remaining = rem
+				best_i = i
+		if best_i == -1:
+			break
+		var unit_dict = arr[best_i]
+		var def2: int = (unit_dict["data"].defense if unit_dict["data"] != null else 1) + bonus
+		var need: int = def2 - int(unit_dict.get("damage", 0))
+		var apply: int = int(min(need, remaining))
+		unit_dict["damage"] = int(unit_dict.get("damage", 0)) + apply
+		remaining -= apply
+
+
+## Ground-defense bonus for `side` on `cell`: +1 controlled-ground, +1 per Shield Drone
+## (stack), matching CombatResolver._ground_defense_bonus and ActionResolver._prune_dead.
+func _ground_defense_bonus(cell: HexCell, side: StringName) -> int:
+	var bonus: int = 0
+	if cell.get_token_state(side) == HexCell.TokenState.CONTROL:
+		bonus += 1
+	for owner in cell.units.keys():
+		for u in cell.units[owner]:
+			if u["data"] != null and u["data"].get("grants_ground_defense"):
+				bonus += 1
+	return bonus
+
+
 ## Guardian attacks the player Units in `cell`: a one-side combat where the
 ## Guardian is the entering side. Reuses the CombatResolver.
 func _guardian_attack(state, cell: HexCell, coord: HexCoord) -> void:
@@ -222,16 +355,15 @@ func _guardian_attack(state, cell: HexCell, coord: HexCoord) -> void:
 	if defer_combats:
 		pending_combats.append({"coord": coord})
 		return
-	var combatants := CombatResolver.combatants_from_units(units_by_owner)
+	# Build the FULL combat context (control +1, Shield Drones, Darkness, Sunstone) the same
+	# way the player and interactive-guardian paths do, so a defender's footing matters here
+	# too. build_combat_context reads `cell` directly, so the Guardian (entering side) and the
+	# players are all picked up.
+	var ctx: Dictionary = ActionResolver.build_combat_context(state, cell, GUARDIAN_OWNER, {})
+	if ctx.is_empty():
+		return
 	var resolver := CombatResolver.new()
-	var log: Array = resolver.resolve({
-		"sides": sides,
-		"combatants": combatants,
-		"controller": &"",
-		"extra_defense": {},
-		"entering_side": GUARDIAN_OWNER,
-		"rng": state.rng,
-	})
+	var log: Array = resolver.resolve(ctx)
 	# Prune dead. A dead Guardian returns to the bag and drops Old Tech here.
 	_prune_dead_and_handle_guardians(state, cell, coord)
 	_emit(state, "combat_resolved", [log])
@@ -241,8 +373,10 @@ func _prune_dead_and_handle_guardians(state, cell: HexCell, coord: HexCoord) -> 
 	for owner in cell.units.keys():
 		var survivors := []
 		var dead := []
+		# Guardians get no ground bonus; players get controlled-ground / Shield-Drone +1.
+		var bonus: int = 0 if owner == GUARDIAN_OWNER else _ground_defense_bonus(cell, owner)
 		for u in cell.units[owner]:
-			var base_def: int = u["data"].defense if u["data"] != null else 1
+			var base_def: int = (u["data"].defense if u["data"] != null else 1) + bonus
 			if u.get("damage", 0) < base_def:
 				survivors.append(u)
 			else:
@@ -281,6 +415,8 @@ func _emit(state, signal_name: String, args: Array) -> void:
 	if state != null and state.has_method("get_tree") and state.get_tree() != null:
 		bus = state.get_tree().root.get_node_or_null("EventBus")
 	if bus == null:
+		return
+	if not bus.has_signal(signal_name):
 		return
 	match args.size():
 		0: bus.emit_signal(signal_name)

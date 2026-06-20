@@ -77,10 +77,12 @@ func run_recruitment_phase() -> void:
 		_draw_action_card(p)
 		# 2. Ask the player's agent what to do.
 		var intent: Dictionary = agents[color].decide_recruitment(state, color)
-		# 2a. Optional Recruitment card (data-driven; logged, effect applied in F+).
+		# 2a. Optional Recruitment card — must be a RECRUITMENT-type card (Ch.7). A card of
+		# the wrong type is rejected (left in hand).
 		var card_idx: int = intent.get("play_recruitment_card", -1)
 		if card_idx >= 0 and card_idx < p.hand.size():
-			p.hand.remove_at(card_idx)
+			if _card_is_type(p.hand[card_idx], ActionCardData.CardType.RECRUITMENT):
+				p.hand.remove_at(card_idx)
 		# 3. Resolve the chosen recruitment action.
 		_apply_recruitment_choice(p, color, intent)
 
@@ -192,6 +194,15 @@ func _place_deployed_units(p, color: StringName, deployed: Array) -> void:
 		cell.add_unit(color, {"data": data, "damage": 0})
 
 
+## True if `card` is the given ActionCardData.CardType. Tolerates a null/typeless card
+## (returns false) so a malformed hand entry can never be "played".
+func _card_is_type(card, want: int) -> bool:
+	if card == null:
+		return false
+	var ct = card.get("card_type")
+	return ct != null and int(ct) == want
+
+
 ## Leader passive hook: Lady Seraph recruits 5 Units / 3 Special instead of 3/2.
 ## We dispatch on the leader's passive_effect_id (flag-driven, no name hardcoding).
 func _apply_leader_recruit_passive(p, ids: Array) -> Array:
@@ -227,14 +238,18 @@ func run_action_phase() -> void:
 					passed[color] = true
 					_emit("turn_passed", [color])
 				"card":
+					# Only a MOVEMENT-type card may be played as an Action (Ch.8).
 					var idx: int = intent.get("hand_index", -1)
 					var p = state.get_player(color)
 					if p != null and idx >= 0 and idx < p.hand.size():
-						p.hand.remove_at(idx)   # Movement-card effect wired in Section F
+						if _card_is_type(p.hand[idx], ActionCardData.CardType.MOVEMENT):
+							p.hand.remove_at(idx)
 				"move_attack":
-					ActionResolver.resolve_move_attack(state, color, intent)
-				"ranged_attack":
-					ActionResolver.resolve_ranged_attack(state, color, intent)
+					# Headless/AI: auto-fire ALL eligible Ranged support shooters (no prompt).
+					var mi: Dictionary = intent.duplicate()
+					if not mi.has("support_shooters"):
+						mi["auto_support_fire"] = true
+					ActionResolver.resolve_move_attack(state, color, mi)
 				_:
 					passed[color] = true
 			safety += 1

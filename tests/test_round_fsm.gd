@@ -47,6 +47,8 @@ func _unit_db() -> Dictionary:
 	return {
 		&"warrior": _u("warrior"),
 		&"scout": _u("scout"),
+		&"gunner": _u("gunner"),
+		&"heavy": _u("heavy"),
 	}
 
 

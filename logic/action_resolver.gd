@@ -136,159 +136,30 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 	var has_fight := _has_other_forces(dest, color)
 	if has_fight and intent.get("defer_combat", false):
 		_after_move_effects(state, color, dest)
+		# Surface the eligible Ranged support shooters so the UI can prompt the human to
+		# fire some IN before combat (Ch.11). The controller passes the chosen subset to
+		# run_interactive_combat.
+		var eligible: Array = eligible_ranged_shooters(state, color, activate, {})
 		return {"ok": true, "reason": "", "combat_log": [], "combat_pending": true,
 			"combat_coord": activate, "entering_side": color, "dest_coord": activate,
-			"token_log": token_log}
+			"eligible_shooters": eligible, "token_log": token_log}
 
+	# Sync (AI / headless / tests) path: gather Ranged support shooters now. An explicit
+	# `support_shooters` list (tests) takes precedence; otherwise `auto_support_fire` (AI /
+	# FSM) fires ALL eligible. Activate every shooter's space, then resolve with their dice.
 	var combat_log: Array = []
 	if has_fight:
-		combat_log = _resolve_combat(state, dest, color, intent.get("combat_cards", {}))
+		var shooters: Array = intent.get("support_shooters", [])
+		if shooters.is_empty() and intent.get("auto_support_fire", false):
+			shooters = eligible_ranged_shooters(state, color, activate, {})
+		activate_shooter_spaces(state, color, shooters)
+		combat_log = _resolve_combat(state, dest, color, intent.get("combat_cards", {}), shooters)
 
 	# --- 4b. Rally Zone / Central Chamber side effects after the dust settles. ---
 	_after_move_effects(state, color, dest)
 
 	return {"ok": true, "reason": "", "combat_log": combat_log, "dest_coord": activate,
 		"token_log": token_log}
-
-
-# ---------------------------------------------------------------------------
-#  Ranged attack (Ch.11) — fire without moving in
-# ---------------------------------------------------------------------------
-
-## Resolve a Ranged-attack action. The activating player's RANGED Units (range >= 1) that
-## are standing in `intent.activate` and have NOT moved fire at `intent.target`, a space
-## within their Range that holds enemy Units or Guardians. No one moves; the target does
-## NOT fire back (one-sided). Ranged attacks ignore line of sight (Ch.11).
-##   intent = { "activate": HexCoord (your ranged Units here),
-##              "target":   HexCoord (enemy-occupied space within range),
-##              "combat_cards": {...} optional }
-## Returns { "ok", "reason", "combat_log" }.
-static func resolve_ranged_attack(state, color: StringName, intent: Dictionary) -> Dictionary:
-	var activate: HexCoord = intent.get("activate")
-	var target: HexCoord = intent.get("target")
-	if activate == null or target == null:
-		return _fail("ranged attack needs an activate space and a target")
-	var src: HexCell = state.get_cell(activate)
-	var tgt: HexCell = state.get_cell(target)
-	if src == null or tgt == null:
-		return _fail("space not on board")
-	if src.has_faceup_activation(color):
-		return _fail("already have a face-up activation token here")
-	if activate.equals(target):
-		return _fail("target must be a different space")
-
-	# Gather YOUR ranged Units in the activated space (range >= 1). They must not have moved
-	# — in a ranged action nothing moves, so simply requiring them present satisfies the rule.
-	var ranged_units: Array = []
-	var max_range := 0
-	for u in src.units_for(color):
-		var d = u.get("data")
-		var rng_v: int = (d.get("range") if d != null else 0)
-		if rng_v >= 1:
-			ranged_units.append(u)
-			max_range = max(max_range, rng_v)
-	if ranged_units.is_empty():
-		return _fail("no Ranged Units in that space")
-
-	# Target must hold enemy forces and be within range (hex distance; no LoS needed).
-	if not _has_other_forces(tgt, color):
-		return _fail("no enemy Units in the target space")
-	if activate.distance_to(target) > max_range:
-		return _fail("target out of range")
-
-	# --- Activate the firing space (it's an action; place the face-up token). ---
-	src.set_token_state(color, HexCell.TokenState.ACTIVE)
-	if state.has_method("note_activation"):
-		state.note_activation(color, activate)
-	_emit(state, "token_flipped", [activate, color, HexCell.TokenState.ACTIVE])
-
-	# --- Build the one-sided context and fire. ---
-	var ctx := build_ranged_context(state, src, tgt, color, ranged_units, intent.get("combat_cards", {}))
-	var resolver := CombatResolver.new()
-	var log: Array = resolver.resolve_ranged_attack(ctx)
-	# Prune the TARGET space (the only side that can take damage) + drop Old Tech for any
-	# Guardian killed there, reusing finish_combat's universal handling.
-	finish_combat(state, tgt, log)
-	return {"ok": true, "reason": "", "combat_log": log, "target_coord": target}
-
-
-## List the legal Ranged-attack TARGET coords for `color` firing FROM `activate`: every
-## board space within the max Range of `color`'s ranged Units standing there that holds an
-## enemy force. Empty if the space has no ranged Units. Used by the UI to highlight targets
-## and by the AI to enumerate ranged options. (No line-of-sight requirement, Ch.11.)
-static func ranged_targets_for(state, color: StringName, activate: HexCoord) -> Array:
-	var src: HexCell = state.get_cell(activate)
-	if src == null:
-		return []
-	var max_range := 0
-	for u in src.units_for(color):
-		var d = u.get("data")
-		var rng_v: int = (d.get("range") if d != null else 0)
-		max_range = max(max_range, rng_v)
-	if max_range < 1:
-		return []
-	var out: Array = []
-	for k in state.board.keys():
-		var coord := HexCoord.from_key(k)
-		if coord.equals(activate):
-			continue
-		if activate.distance_to(coord) > max_range:
-			continue
-		var cell: HexCell = state.board[k]
-		if _has_other_forces(cell, color):
-			out.append(coord)
-	return out
-
-
-## Build the one-sided ranged context: attacker Combatants (your ranged Units only) firing
-## at the TARGET space's defenders, honouring the TARGET's control/drone defense, Darkness,
-## and Sunstone. Shared by the sync path (and any future interactive ranged path).
-static func build_ranged_context(state, src: HexCell, tgt: HexCell, color: StringName, ranged_units: Array, combat_cards: Dictionary = {}) -> Dictionary:
-	var attackers: Array = CombatResolver.combatants_from_units({color: ranged_units})[color]
-
-	# The defending side: pick the (single) other force in the target space. If multiple
-	# enemy owners share it, fire at the first in a stable order (matches melee _hits_share).
-	var defender_side: StringName = &""
-	for owner in tgt.units.keys():
-		if owner != color and not tgt.units[owner].is_empty():
-			defender_side = owner
-			break
-	var defenders: Array = CombatResolver.combatants_from_units({defender_side: tgt.units_for(defender_side)})[defender_side]
-
-	# Controller of the TARGET space grants +1 ground Defense to its Units.
-	var controller: StringName = &""
-	for owner in tgt.token_state.keys():
-		if tgt.get_token_state(owner) == HexCell.TokenState.CONTROL:
-			controller = owner
-			break
-
-	var extra_def := {}
-	if state.has_method("extra_defense_for"):
-		var bonus: int = state.extra_defense_for(defender_side)
-		if bonus != 0:
-			extra_def[defender_side] = bonus
-	if controller != &"" and tgt.has_token_effect(&"func_shield_drones", true):
-		extra_def[controller] = int(extra_def.get(controller, 0)) + 1
-
-	var sunstone_active := false
-	if state.has_method("is_sunstone_marked"):
-		sunstone_active = state.is_sunstone_marked(tgt.coord)
-
-	var space_attack_penalty := 0
-	if tgt.has_token_effect(&"env_darkness", true):
-		space_attack_penalty = 1
-
-	return {
-		"attackers": attackers,
-		"defenders": defenders,
-		"defender_side": defender_side,
-		"controller": controller,
-		"extra_defense": extra_def,
-		"sunstone_active": sunstone_active,
-		"space_attack_penalty": space_attack_penalty,
-		"rng": state.rng,
-	}
-
 
 # ---------------------------------------------------------------------------
 #  Combat hand-off
@@ -299,7 +170,7 @@ static func build_ranged_context(state, src: HexCell, tgt: HexCell, color: Strin
 ## { "extra_combat_rounds": int, "cancelled_rounds": int, "reroll_misses": {side->int} }.
 ## Shared by the sync (`_resolve_combat`) AND interactive (GameController) paths so the
 ## combat setup is identical either way.
-static func build_combat_context(state, cell: HexCell, entering_side: StringName, combat_cards: Dictionary = {}) -> Dictionary:
+static func build_combat_context(state, cell: HexCell, entering_side: StringName, combat_cards: Dictionary = {}, support_shooters: Array = []) -> Dictionary:
 	var sides: Array = []
 	var units_by_owner: Dictionary = {}
 	for owner in cell.units.keys():
@@ -361,7 +232,20 @@ static func build_combat_context(state, cell: HexCell, entering_side: StringName
 	if cell.has_token_effect(&"env_darkness", true):
 		space_attack_penalty = 1
 
+	# Ranged SUPPORT FIRE (Ch.11): remote Ranged Units firing INTO this combat for the
+	# entering side. They are NOT in `combatants`/`sides` (so the defender can never hit
+	# them); they only add dice. Build them as Combatants via the same helper, keyed under
+	# the entering side, and hand them to the resolver as a separate pool.
+	var shooter_combatants: Array = []
+	if not support_shooters.is_empty() and entering_side != &"":
+		var shooter_units: Array = []
+		for sh in support_shooters:
+			shooter_units.append(sh["unit"])
+		shooter_combatants = CombatResolver.combatants_from_units({entering_side: shooter_units})[entering_side]
+
 	return {
+		"support_shooters": shooter_combatants,
+		"support_side": entering_side if not shooter_combatants.is_empty() else &"",
 		"extra_attack_dice": extra_attack_dice,
 		"space_attack_penalty": space_attack_penalty,
 		"sticky_bomb_count": sticky_bomb_count,
@@ -403,8 +287,8 @@ static func finish_combat(state, cell: HexCell, log: Array) -> void:
 
 ## Synchronous combat (headless/AI path; unchanged behaviour). Builds the context,
 ## runs the sync resolver, prunes + emits. Interactive combat lives in GameController.
-static func _resolve_combat(state, cell: HexCell, entering_side: StringName, combat_cards: Dictionary = {}) -> Array:
-	var ctx := build_combat_context(state, cell, entering_side, combat_cards)
+static func _resolve_combat(state, cell: HexCell, entering_side: StringName, combat_cards: Dictionary = {}, support_shooters: Array = []) -> Array:
+	var ctx := build_combat_context(state, cell, entering_side, combat_cards, support_shooters)
 	if ctx.is_empty():
 		return []
 	var resolver := CombatResolver.new()
@@ -533,6 +417,85 @@ static func _has_other_forces(cell: HexCell, me: StringName) -> bool:
 		if owner != me and not cell.units[owner].is_empty():
 			return true
 	return false
+
+
+# ---------------------------------------------------------------------------
+#  Ranged support fire (Ch.11)
+# ---------------------------------------------------------------------------
+
+## List `color`'s Ranged Units eligible to fire INTO a combat at `combat_coord` from afar.
+## Returns an Array of { "coord": HexCoord, "unit": <unit dict> }. A shooter qualifies when:
+##   * its Unit has Range >= 1,
+##   * hex distance from its space to the combat space <= its Range (no line of sight),
+##   * its space is NOT activated by `color` (no face-up Activation token of theirs),
+##   * its space has NO enemy Units,
+##   * (Manstopper / extra_setup_move) it moved <= 1 space this Activation — looked up in
+##     `moved_this_activation` (unit dict -> spaces moved); absent = moved 0 = eligible.
+## The combat space itself is skipped, so any Unit that just moved into the fight (and is
+## therefore a melee participant) is never offered as a remote shooter.
+static func eligible_ranged_shooters(state, color: StringName, combat_coord: HexCoord, moved_this_activation: Dictionary = {}) -> Array:
+	var out: Array = []
+	if combat_coord == null:
+		return out
+	for k in state.board.keys():
+		var coord: HexCoord = HexCoord.from_key(k)
+		if coord.equals(combat_coord):
+			continue
+		var cell: HexCell = state.board[k]
+		if cell == null:
+			continue
+		if cell.has_faceup_activation(color):
+			continue
+		if cell.has_enemy_units(color):
+			continue
+		var dist: int = coord.distance_to(combat_coord)
+		for u in cell.units_for(color):
+			var d = u.get("data")
+			var rng_v: int = (d.range if d != null else 0)
+			if rng_v < 1:
+				continue
+			if dist > rng_v:
+				continue
+			# Manstopper setup gate: only if it has moved <= 1 space this Activation.
+			if d != null and d.extra_setup_move:
+				var moved: int = _moved_steps(moved_this_activation, u)
+				if moved > 1:
+					continue
+			out.append({"coord": coord, "unit": u})
+	return out
+
+
+## Steps a specific unit dict moved this Activation, per `moved_this_activation` (matched by
+## identity). 0 if absent (didn't move). The dict can't key on a Dictionary, so it stores
+## entries as { "unit": <dict>, "steps": int } and we identity-match here.
+static func _moved_steps(moved_this_activation: Dictionary, unit) -> int:
+	var entries: Array = moved_this_activation.get("entries", [])
+	for e in entries:
+		if is_same(e.get("unit"), unit):
+			return int(e.get("steps", 0))
+	return 0
+
+
+## Activate the space of every Ranged support shooter that fired (Ch.11 step 7): place a
+## face-up Activation token of `color` there (deduped), record it for Dehydration, and emit.
+## Runs even if the combat is one-sided/empty, so firing always costs the Activation.
+static func activate_shooter_spaces(state, color: StringName, support_shooters: Array) -> void:
+	var done: Dictionary = {}
+	for sh in support_shooters:
+		var coord: HexCoord = sh.get("coord")
+		if coord == null:
+			continue
+		var key: String = coord.key()
+		if done.has(key):
+			continue
+		done[key] = true
+		var cell: HexCell = state.get_cell(coord)
+		if cell == null:
+			continue
+		cell.set_token_state(color, HexCell.TokenState.ACTIVE)
+		if state.has_method("note_activation"):
+			state.note_activation(color, coord)
+		_emit(state, "token_flipped", [coord, color, HexCell.TokenState.ACTIVE])
 
 
 # ---------------------------------------------------------------------------

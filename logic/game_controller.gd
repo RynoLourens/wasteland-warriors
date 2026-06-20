@@ -57,6 +57,13 @@ var combat_round_provider: Callable = Callable()
 ## If unset, the resolver uses its default minimise-losses policy.
 var combat_assign_provider: Callable = Callable()
 
+## The UI sets this (BoardView) to let a HUMAN pick which Ranged Units fire INTO a combat
+## as support (Ch.11), BEFORE the fight. Signature:
+##   func(color:StringName, combat_coord:HexCoord, eligible:Array) -> Array
+## where `eligible` is [{coord,unit}] and the return is the chosen subset. If unset (or it
+## returns []), no support fire happens.
+var support_fire_provider: Callable = Callable()
+
 
 # ---------------------------------------------------------------------------
 #  Setup
@@ -99,9 +106,39 @@ func start_match(seats: Array, seed: int) -> void:
 	_artefact_deck = _load_artefact_deck()
 	_fsm = RoundFSM.new(state, agents, unit_db, _guardian_pool, seed)
 
+	# Setup rule 2: roll a die per seat; the highest roll takes the First Player token.
+	# Ties re-roll among the leaders (bounded). Uses the deck_rng so it doesn't perturb
+	# the map/combat streams. Falls back to index 0 if turn order is empty.
+	_roll_first_player()
+
 	winner = &""
 	_running = false   # not running until begin() is called by the view
 	emit_signal("match_started", state.turn_order.duplicate())
+
+
+## Setup rule 2: highest die roll takes the First Player token. Sets _fsm.first_player_index
+## to the winning seat's turn-order index. Re-rolls ties among the current leaders.
+func _roll_first_player() -> void:
+	if _fsm == null or state.turn_order.is_empty():
+		return
+	var contenders: Array = state.turn_order.duplicate()
+	var guard: int = 0
+	while contenders.size() > 1 and guard < 50:
+		guard += 1
+		var best: int = -1
+		var winners: Array = []
+		for color in contenders:
+			var roll: int = state.deck_rng.randi_range(1, 6)
+			if roll > best:
+				best = roll
+				winners = [color]
+			elif roll == best:
+				winners.append(color)
+		contenders = winners
+	var first: StringName = contenders[0] if not contenders.is_empty() else state.turn_order[0]
+	_fsm.first_player_index = state.turn_order.find(first)
+	if _fsm.first_player_index < 0:
+		_fsm.first_player_index = 0
 
 
 ## Kick off the round-loop coroutine. Called by BoardView AFTER it has connected to
@@ -255,10 +292,13 @@ func _action_phase() -> void:
 						turn_done = true
 						emit_signal("seat_passed", color)
 					"card":
+						# Only a MOVEMENT-type card may be played as an Action (Ch.8).
 						var idx: int = intent.get("hand_index", -1)
 						var p = state.get_player(color)
 						if p != null and idx >= 0 and idx < p.hand.size():
-							p.hand.remove_at(idx)
+							var c = p.hand[idx]
+							if c != null and c.get("card_type") != null and int(c.get("card_type")) == ActionCardData.CardType.MOVEMENT:
+								p.hand.remove_at(idx)
 						turn_done = true
 					"move_attack":
 						# Human seats defer combat so they can play a card each round;
@@ -266,22 +306,27 @@ func _action_phase() -> void:
 						var as_human: bool = color in human_colors
 						var move_intent := intent.duplicate()
 						move_intent["defer_combat"] = as_human
+						# AI seats auto-fire ALL eligible Ranged support shooters; humans are
+						# prompted (below) once combat is pending.
+						if not as_human:
+							move_intent["auto_support_fire"] = true
 						move_intent["token_deps"] = _token_deps_for_effects(color)
 						var result: Dictionary = ActionResolver.resolve_move_attack(state, color, move_intent)
 						emit_signal("action_resolved", color, result)
 						if result.get("ok", false) and result.get("combat_pending", false):
-							await run_interactive_combat(result.get("combat_coord"), result.get("entering_side"))
+							# Prompt the human to fire Ranged support shooters before combat (Ch.11).
+							var shooters: Array = []
+							if as_human:
+								shooters = await _prompt_support_shooters(color,
+									result.get("combat_coord"), result.get("eligible_shooters", []))
+							await run_interactive_combat(result.get("combat_coord"),
+								result.get("entering_side"), shooters)
 						# Central Chamber: the instant a player's Unit enters the centre,
 						# spawn 1 Guardian there (bag draw, may fizzle) and fight it now.
 						# From then on the breach flag makes the Guardian phase spawn 2.
 						if result.get("ok", false):
 							await _handle_center_entry(color, result.get("dest_coord"))
 						turn_done = result.get("ok", false)   # illegal -> re-ask
-					"ranged_attack":
-						# One-sided ranged fire (Ch.11): immediate, no deferred combat window.
-						var r_result: Dictionary = ActionResolver.resolve_ranged_attack(state, color, intent)
-						emit_signal("action_resolved", color, r_result)
-						turn_done = r_result.get("ok", false)   # illegal -> re-ask
 					_:
 						passed[color] = true
 						turn_done = true
@@ -298,13 +343,25 @@ func _action_phase() -> void:
 ## card per round (Defensive Stance / Re-roll / Cancel / Extra Attack). Uses the
 ## tested CombatResolver building blocks via ActionResolver; the per-round card
 ## window is supplied by `combat_round_provider` (set by the UI). Awaits humans.
-func run_interactive_combat(coord, entering_side) -> void:
+## Ask the human (via the UI provider) which eligible Ranged Units to fire IN as support.
+## Returns the chosen subset of `eligible` ([{coord,unit}]); [] if none / no provider.
+func _prompt_support_shooters(color, combat_coord, eligible: Array) -> Array:
+	if eligible.is_empty() or not support_fire_provider.is_valid():
+		return []
+	var chosen = await support_fire_provider.call(color, combat_coord, eligible)
+	return chosen if chosen is Array else []
+
+
+func run_interactive_combat(coord, entering_side, support_shooters: Array = []) -> void:
 	if coord == null:
 		return
 	var cell: HexCell = state.get_cell(coord)
 	if cell == null:
 		return
-	var ctx := ActionResolver.build_combat_context(state, cell, entering_side, {})
+	# Ranged support shooters (Ch.11) add dice to the entering side and have their spaces
+	# Activated up front (so firing always costs the Activation, win or lose).
+	ActionResolver.activate_shooter_spaces(state, entering_side, support_shooters)
+	var ctx := ActionResolver.build_combat_context(state, cell, entering_side, {}, support_shooters)
 	if ctx.is_empty():
 		return
 	var resolver := CombatResolver.new()

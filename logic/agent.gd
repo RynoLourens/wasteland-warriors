@@ -40,10 +40,9 @@ func decide_recruitment(state, color: StringName) -> Dictionary:
 ##   {"type": "move_attack",
 ##      "activate": HexCoord,                                  # space to Activate
 ##      "moves": Array of {"from": HexCoord, "unit": <unit dict>},  # units to pull in
-##      "carry_old_tech": bool}                                # carry Old Tech when leaving (needs Control)
-##   {"type": "ranged_attack",                                 # Ch.11: fire WITHOUT moving in
-##      "activate": HexCoord,                                  # your space holding Ranged Units
-##      "target": HexCoord}                                    # enemy space within Range (no LoS)
+##      "carry_old_tech": bool,                                # carry Old Tech when leaving (needs Control)
+##      "auto_support_fire": bool,                             # AI/FSM: fire ALL eligible Ranged shooters
+##      "support_shooters": Array}                             # tests: explicit [{coord,unit}] shooters
 func decide_action(state, color: StringName) -> Dictionary:
 	return {"type": "pass"}
 
