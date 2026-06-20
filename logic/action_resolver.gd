@@ -48,6 +48,10 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 	var use_explicit_carriers: bool = not carriers.is_empty()
 
 	# --- 2. Validate every move BEFORE mutating anything (atomic action). ---
+	# Manstopper rule (Ch.14): it has Move 2 but must spend 1 Move to set up its weapon
+	# before Attacking. So when the activated space is an ATTACK (already holds enemy
+	# Units or Guardians), a unit flagged `extra_setup_move` reaches with Move-1.
+	var dest_is_attack: bool = _has_other_forces(dest, color)
 	var plan := []   # Array of {from_cell, unit, source_coord}
 	for m in moves:
 		var from_coord: HexCoord = m.get("from")
@@ -68,12 +72,16 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 		# Through Enemies) are honoured — the same query the UI highlights with, so
 		# "lit up but rejected" can't happen.
 		if not from_coord.equals(activate):
-			if not _reachable_via_state(state, from_coord, activate, color, unit):
+			if not _reachable_via_state(state, from_coord, activate, color, unit, dest_is_attack):
 				return _fail("destination out of range for a unit")
 		plan.append({"from_cell": from_cell, "unit": unit, "source_coord": from_coord})
 
 	# --- 2b. Place the face-up Activation token. ---
 	dest.set_token_state(color, HexCell.TokenState.ACTIVE)
+	# Remember this as the player's most-recent Activation, so a Dehydration env token
+	# resolved this round can spare it from being flipped down at Cleanup (Ch.13).
+	if state.has_method("note_activation"):
+		state.note_activation(color, activate)
 	_emit(state, "token_flipped", [activate, color, HexCell.TokenState.ACTIVE])
 
 	# --- 2c. Execute the validated moves. ---
@@ -107,6 +115,12 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 			from_cell.old_tech -= 1
 			dest.old_tech += 1
 
+	# --- 2d. Sapperteur (Ch.14): "When it stops in a space, you may place a Sticky Bomb
+	# token there." Any Sapperteur that MOVED into dest this action drops one bomb. We add
+	# at most one bomb per action (a space holds one), and only if one isn't already here.
+	if moved_in > 0:
+		_maybe_place_sapperteur_bomb(state, color, dest)
+
 	# --- 3. Environment/Function-on-arrival: flip & RESOLVE face-down tokens on dest. ---
 	# Tokens flip only when a Unit actually MOVED into the space this action (rulebook:
 	# "moves through or stops in"). Activating an empty space with no movers must NOT
@@ -135,6 +149,145 @@ static func resolve_move_attack(state, color: StringName, intent: Dictionary) ->
 
 	return {"ok": true, "reason": "", "combat_log": combat_log, "dest_coord": activate,
 		"token_log": token_log}
+
+
+# ---------------------------------------------------------------------------
+#  Ranged attack (Ch.11) — fire without moving in
+# ---------------------------------------------------------------------------
+
+## Resolve a Ranged-attack action. The activating player's RANGED Units (range >= 1) that
+## are standing in `intent.activate` and have NOT moved fire at `intent.target`, a space
+## within their Range that holds enemy Units or Guardians. No one moves; the target does
+## NOT fire back (one-sided). Ranged attacks ignore line of sight (Ch.11).
+##   intent = { "activate": HexCoord (your ranged Units here),
+##              "target":   HexCoord (enemy-occupied space within range),
+##              "combat_cards": {...} optional }
+## Returns { "ok", "reason", "combat_log" }.
+static func resolve_ranged_attack(state, color: StringName, intent: Dictionary) -> Dictionary:
+	var activate: HexCoord = intent.get("activate")
+	var target: HexCoord = intent.get("target")
+	if activate == null or target == null:
+		return _fail("ranged attack needs an activate space and a target")
+	var src: HexCell = state.get_cell(activate)
+	var tgt: HexCell = state.get_cell(target)
+	if src == null or tgt == null:
+		return _fail("space not on board")
+	if src.has_faceup_activation(color):
+		return _fail("already have a face-up activation token here")
+	if activate.equals(target):
+		return _fail("target must be a different space")
+
+	# Gather YOUR ranged Units in the activated space (range >= 1). They must not have moved
+	# — in a ranged action nothing moves, so simply requiring them present satisfies the rule.
+	var ranged_units: Array = []
+	var max_range := 0
+	for u in src.units_for(color):
+		var d = u.get("data")
+		var rng_v: int = (d.get("range") if d != null else 0)
+		if rng_v >= 1:
+			ranged_units.append(u)
+			max_range = max(max_range, rng_v)
+	if ranged_units.is_empty():
+		return _fail("no Ranged Units in that space")
+
+	# Target must hold enemy forces and be within range (hex distance; no LoS needed).
+	if not _has_other_forces(tgt, color):
+		return _fail("no enemy Units in the target space")
+	if activate.distance_to(target) > max_range:
+		return _fail("target out of range")
+
+	# --- Activate the firing space (it's an action; place the face-up token). ---
+	src.set_token_state(color, HexCell.TokenState.ACTIVE)
+	if state.has_method("note_activation"):
+		state.note_activation(color, activate)
+	_emit(state, "token_flipped", [activate, color, HexCell.TokenState.ACTIVE])
+
+	# --- Build the one-sided context and fire. ---
+	var ctx := build_ranged_context(state, src, tgt, color, ranged_units, intent.get("combat_cards", {}))
+	var resolver := CombatResolver.new()
+	var log: Array = resolver.resolve_ranged_attack(ctx)
+	# Prune the TARGET space (the only side that can take damage) + drop Old Tech for any
+	# Guardian killed there, reusing finish_combat's universal handling.
+	finish_combat(state, tgt, log)
+	return {"ok": true, "reason": "", "combat_log": log, "target_coord": target}
+
+
+## List the legal Ranged-attack TARGET coords for `color` firing FROM `activate`: every
+## board space within the max Range of `color`'s ranged Units standing there that holds an
+## enemy force. Empty if the space has no ranged Units. Used by the UI to highlight targets
+## and by the AI to enumerate ranged options. (No line-of-sight requirement, Ch.11.)
+static func ranged_targets_for(state, color: StringName, activate: HexCoord) -> Array:
+	var src: HexCell = state.get_cell(activate)
+	if src == null:
+		return []
+	var max_range := 0
+	for u in src.units_for(color):
+		var d = u.get("data")
+		var rng_v: int = (d.get("range") if d != null else 0)
+		max_range = max(max_range, rng_v)
+	if max_range < 1:
+		return []
+	var out: Array = []
+	for k in state.board.keys():
+		var coord := HexCoord.from_key(k)
+		if coord.equals(activate):
+			continue
+		if activate.distance_to(coord) > max_range:
+			continue
+		var cell: HexCell = state.board[k]
+		if _has_other_forces(cell, color):
+			out.append(coord)
+	return out
+
+
+## Build the one-sided ranged context: attacker Combatants (your ranged Units only) firing
+## at the TARGET space's defenders, honouring the TARGET's control/drone defense, Darkness,
+## and Sunstone. Shared by the sync path (and any future interactive ranged path).
+static func build_ranged_context(state, src: HexCell, tgt: HexCell, color: StringName, ranged_units: Array, combat_cards: Dictionary = {}) -> Dictionary:
+	var attackers: Array = CombatResolver.combatants_from_units({color: ranged_units})[color]
+
+	# The defending side: pick the (single) other force in the target space. If multiple
+	# enemy owners share it, fire at the first in a stable order (matches melee _hits_share).
+	var defender_side: StringName = &""
+	for owner in tgt.units.keys():
+		if owner != color and not tgt.units[owner].is_empty():
+			defender_side = owner
+			break
+	var defenders: Array = CombatResolver.combatants_from_units({defender_side: tgt.units_for(defender_side)})[defender_side]
+
+	# Controller of the TARGET space grants +1 ground Defense to its Units.
+	var controller: StringName = &""
+	for owner in tgt.token_state.keys():
+		if tgt.get_token_state(owner) == HexCell.TokenState.CONTROL:
+			controller = owner
+			break
+
+	var extra_def := {}
+	if state.has_method("extra_defense_for"):
+		var bonus: int = state.extra_defense_for(defender_side)
+		if bonus != 0:
+			extra_def[defender_side] = bonus
+	if controller != &"" and tgt.has_token_effect(&"func_shield_drones", true):
+		extra_def[controller] = int(extra_def.get(controller, 0)) + 1
+
+	var sunstone_active := false
+	if state.has_method("is_sunstone_marked"):
+		sunstone_active = state.is_sunstone_marked(tgt.coord)
+
+	var space_attack_penalty := 0
+	if tgt.has_token_effect(&"env_darkness", true):
+		space_attack_penalty = 1
+
+	return {
+		"attackers": attackers,
+		"defenders": defenders,
+		"defender_side": defender_side,
+		"controller": controller,
+		"extra_defense": extra_def,
+		"sunstone_active": sunstone_active,
+		"space_attack_penalty": space_attack_penalty,
+		"rng": state.rng,
+	}
 
 
 # ---------------------------------------------------------------------------
@@ -186,8 +339,33 @@ static func build_combat_context(state, cell: HexCell, entering_side: StringName
 		if n_def > 0:
 			extra_attack_dice[controller] = n_def
 
+	# Placed Sticky Bomb tokens (Ch.11 + Sapperteur/Action card): a bomb owned by a side
+	# OTHER than the one entering rolls 2 Attack dice at the entering side, before combat.
+	# (The resolver's unit-flag sticky-bomb path is for a Sapperteur standing here; this
+	# covers bombs LEFT on the space, which persist after the Sapperteur moves on.)
+	# Sunstone Fragments (Artifact): if THIS space is marked, ranged attackers (units with
+	# Range, incl. Guardians) can only HIT on a 6 this round.
+	var sunstone_active := false
+	if state.has_method("is_sunstone_marked"):
+		sunstone_active = state.is_sunstone_marked(cell.coord)
+
+	var sticky_bomb_count := 0
+	if entering_side != &"":
+		for t in cell.tokens:
+			if t.get("kind", "") == "sticky_bomb" and t.get("owner", &"") != entering_side:
+				sticky_bomb_count += 1
+
+	# Darkness ENVIRONMENT token (Ch.13): all Units here get -1 Attack. Applies to
+	# EVERY side in the space (drained across each side's dice pool by the resolver).
+	var space_attack_penalty := 0
+	if cell.has_token_effect(&"env_darkness", true):
+		space_attack_penalty = 1
+
 	return {
 		"extra_attack_dice": extra_attack_dice,
+		"space_attack_penalty": space_attack_penalty,
+		"sticky_bomb_count": sticky_bomb_count,
+		"sunstone_active": sunstone_active,
 		"sides": sides,
 		"combatants": combatants,
 		"controller": controller,
@@ -207,12 +385,19 @@ static func build_combat_context(state, cell: HexCell, entering_side: StringName
 ## the bag-return is handled by the caller that owns the GuardianManager.
 static func finish_combat(state, cell: HexCell, log: Array) -> void:
 	var guardians_before: int = cell.units_for(GUARDIAN_OWNER).size()
-	_prune_dead(cell)
+	var dead_by_owner: Dictionary = _prune_dead(cell)
 	var guardians_after: int = cell.units_for(GUARDIAN_OWNER).size()
 	var died: int = guardians_before - guardians_after
 	for _i in range(died):
 		cell.old_tech += 1
 		_emit(state, "old_tech_captured", [GUARDIAN_OWNER, cell.coord])
+	# Medical Machine artifact: a player holding it may save ONE just-killed Unit (yours or
+	# an enemy's) for a free redeploy next Recruitment. We arm it for any holder, choosing
+	# the first dead Unit available (UI can later let them pick which).
+	for owner in dead_by_owner.keys():
+		for victim in dead_by_owner[owner]:
+			if ArtefactEffects.arm_medical_machine(state, owner, victim):
+				break   # one save per Medical Machine
 	_emit(state, "combat_resolved", [log])
 
 
@@ -231,7 +416,7 @@ static func _resolve_combat(state, cell: HexCell, entering_side: StringName, com
 ## Remove dead units from the cell. Death is checked against EFFECTIVE Defense
 ## (base + controlled-ground bonus), matching the resolver's own death rule, so a
 ## controlled unit doesn't die one hit early.
-static func _prune_dead(cell: HexCell) -> void:
+static func _prune_dead(cell: HexCell) -> Dictionary:
 	var controller := &""
 	for owner in cell.token_state.keys():
 		if cell.get_token_state(owner) == HexCell.TokenState.CONTROL:
@@ -244,8 +429,10 @@ static func _prune_dead(cell: HexCell) -> void:
 		for u in cell.units[owner]:
 			if u["data"] != null and u["data"].get("grants_ground_defense"):
 				drone_bonus += 1
+	var dead_by_owner: Dictionary = {}
 	for owner in cell.units.keys():
 		var survivors := []
+		var dead := []
 		for u in cell.units[owner]:
 			var base_def: int = u["data"].defense if u["data"] != null else 1
 			# Controlled ground (+1) and Shield Drone(s) (+1 each) DO STACK — a unit on
@@ -256,10 +443,15 @@ static func _prune_dead(cell: HexCell) -> void:
 				bonus += 1
 			if u.get("damage", 0) < base_def + bonus:
 				survivors.append(u)
+			else:
+				dead.append(u)
+		if not dead.is_empty() and owner != GUARDIAN_OWNER:
+			dead_by_owner[owner] = dead
 		if survivors.is_empty():
 			cell.units.erase(owner)
 		else:
 			cell.units[owner] = survivors
+	return dead_by_owner
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +461,27 @@ static func _prune_dead(cell: HexCell) -> void:
 ## Reachability that honours round buffs by going through GameState.reachable_for
 ## (which folds in Extra Move / Move Through Enemies). Falls back to a raw board
 ## query if `state` lacks the method (pure headless tests with a bare board).
-static func _reachable_via_state(state, from_coord: HexCoord, dest: HexCoord, owner: StringName, unit) -> bool:
+static func _reachable_via_state(state, from_coord: HexCoord, dest: HexCoord, owner: StringName, unit, is_attack: bool = false) -> bool:
 	var data = unit.get("data")
+	# Manstopper setup cost: when this move is an Attack, a unit that must "set up"
+	# (extra_setup_move) loses 1 Move. We enforce it by requiring the destination to be
+	# within (Move-1) of the source — computed with a raw HexGraph query using the
+	# reduced budget, since reachable_for reads the unit's printed Move directly.
+	if is_attack and data != null and data.get("extra_setup_move"):
+		var reduced: int = int(max(0, (data.move if data != null else 1) - 1))
+		var abilities := {
+			"move": reduced,
+			"moves_through_enemies": data.moves_through_enemies if data != null else false,
+			"can_blink": false,
+			"owner": owner,
+		}
+		# Fold in any round-scoped Extra Move buff so cards still help a Manstopper.
+		if state != null and state.has_method("extra_move_for"):
+			abilities["move"] += int(state.extra_move_for(owner, from_coord))
+		for c in HexGraph.reachable(state.board, from_coord, abilities):
+			if c is HexCoord and c.equals(dest):
+				return true
+		return false
 	if state != null and state.has_method("reachable_for"):
 		for c in state.reachable_for(owner, from_coord, data):
 			if c is HexCoord and c.equals(dest):
@@ -295,6 +506,25 @@ static func _reachable(board: Dictionary, from_coord: HexCoord, dest: HexCoord, 
 
 static func _unit_in_cell(cell: HexCell, owner: StringName, unit) -> bool:
 	return cell.units_for(owner).has(unit)
+
+
+## Sapperteur unit ability: if one of `color`'s units in `cell` carries places_sticky_bomb
+## and the cell doesn't already hold a Sticky Bomb of theirs, drop one (face-up). Mirrors
+## the Action-card placement shape so the combat sticky-bomb sub-round picks it up.
+static func _maybe_place_sapperteur_bomb(state, color: StringName, cell: HexCell) -> void:
+	var has_sapperteur := false
+	for u in cell.units_for(color):
+		var d = u.get("data")
+		if d != null and d.get("places_sticky_bomb"):
+			has_sapperteur = true
+			break
+	if not has_sapperteur:
+		return
+	for t in cell.tokens:
+		if t.get("kind", "") == "sticky_bomb" and t.get("owner", &"") == color:
+			return   # already a bomb of theirs here; one per space
+	cell.tokens.append({"data": null, "face_up": true, "kind": "sticky_bomb", "owner": color})
+	_emit(state, "token_flipped", [cell.coord, color, HexCell.TokenState.NONE])
 
 
 ## Any force present that isn't `me` — enemy players OR Guardians.

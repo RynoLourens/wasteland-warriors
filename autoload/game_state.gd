@@ -36,6 +36,18 @@ var deck_rng := RandomNumberGenerator.new()
 #   { color: { "extra_defense": int, "extra_move": int, "move_through_enemies": bool } }
 var round_buffs: Dictionary = {}
 
+# --- Dehydration (Environment, Ch.13): "At the end of this round, do not flip the last
+# Activation token you placed." We remember each player's most-recent Activation coord,
+# and a set of colors currently under Dehydration. Cleanup keeps the recorded token
+# face-up for a dehydrated player, then both are reset for the next round. ---
+var last_activation: Dictionary = {}   # color(StringName) -> HexCoord (most recent activation)
+var dehydrated: Dictionary = {}        # color(StringName) -> true (Dehydration in effect this round)
+
+# --- Sunstone Fragments (Artifact, Ch.11): hexkeys where ranged attackers (incl.
+# Guardians) can only HIT on a 6 this round. Set during the Action phase; cleared at
+# Cleanup with the other round-scoped effects. ---
+var sunstone_marks: Dictionary = {}    # hexkey(String) -> true
+
 
 func _ready() -> void:
 	# Nothing auto-runs; a match starts explicitly via setup_match() so the
@@ -198,6 +210,67 @@ func reachable_for(color: StringName, from: HexCoord, unit_data) -> Array:
 		"owner": color,
 	}
 	return HexGraph.reachable(board, from, abilities)
+
+
+## Extra Move spaces granted by round-scoped card buffs for `color` moving FROM `from`.
+## Used by callers (e.g. the Manstopper setup-cost check) that build their own abilities
+## dict with a reduced base Move but still want card buffs folded in.
+func extra_move_for(color: StringName, from: HexCoord) -> int:
+	var buff: Dictionary = round_buffs.get(color, {})
+	var move_spaces: Dictionary = buff.get("extra_move_spaces", {})
+	return int(move_spaces.get(from.key(), 0))
+
+
+# ---------------------------------------------------------------------------
+#  Dehydration (Environment token, Ch.13)
+# ---------------------------------------------------------------------------
+
+## Record the coord of the most recent Activation token `color` placed. Called by
+## ActionResolver whenever a face-up Activation token is placed, so Dehydration knows
+## which token to spare at Cleanup.
+func note_activation(color: StringName, coord: HexCoord) -> void:
+	last_activation[color] = coord
+
+
+## Flag `color` as Dehydrated for the rest of this round (TokenEffects calls this when a
+## Dehydration env token resolves). At Cleanup, that player's last Activation token is
+## NOT flipped down (it stays face-up into the next round).
+func set_dehydration(color: StringName) -> void:
+	dehydrated[color] = true
+
+
+## The Activation coord to KEEP face-up at Cleanup for `color` (null if not dehydrated
+## or no activation recorded this round). RoundFSM Cleanup consults this.
+func dehydration_keep_coord(color: StringName):
+	if not dehydrated.get(color, false):
+		return null
+	return last_activation.get(color, null)
+
+
+## Reset Dehydration + last-activation tracking for the new round (called at end of
+## Cleanup, after the keep has been honoured).
+func clear_dehydration() -> void:
+	dehydrated.clear()
+	last_activation.clear()
+
+
+# ---------------------------------------------------------------------------
+#  Sunstone Fragments (Artifact, Ch.11)
+# ---------------------------------------------------------------------------
+
+## Mark a space so ranged attackers can only hit it on a 6 this round.
+func add_sunstone_mark(coord: HexCoord) -> void:
+	sunstone_marks[coord.key()] = true
+
+
+## True if `coord` is under a Sunstone mark this round.
+func is_sunstone_marked(coord: HexCoord) -> bool:
+	return sunstone_marks.has(coord.key())
+
+
+## Reset Sunstone marks (called at Cleanup).
+func clear_sunstone_marks() -> void:
+	sunstone_marks.clear()
 
 
 # ---------------------------------------------------------------------------

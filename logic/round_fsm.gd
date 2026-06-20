@@ -71,6 +71,8 @@ func run_recruitment_phase() -> void:
 		var p = state.get_player(color)
 		if p == null:
 			continue
+		# 0. Medical Machine: place any Units saved last combat into the Rally Zone for free.
+		ArtefactEffects.apply_pending_redeploys(state, color, {"unit_db": unit_db})
 		# 1. Draw an Action card (from a shared deck if present; harmless no-op if not).
 		_draw_action_card(p)
 		# 2. Ask the player's agent what to do.
@@ -94,6 +96,87 @@ func _apply_recruitment_choice(p, color: StringName, intent: Dictionary) -> void
 			p.recruit(ids)
 		"punish":
 			p.punish_cowards(state.rng)
+		"control_room_spawn":
+			# Guardian Control Room FUNCTION (Ch.13): spawn 1 Guardian in a face-up Control
+			# Room you Control, instead of the normal Recruitment action.
+			_recruit_control_room_spawn(p, color, intent)
+		"hub_deploy":
+			# Teleporter Hub FUNCTION (Ch.13): Deploy your drawn Units into the Hub space
+			# (which you Control) instead of your Rally Zone, and Activate it.
+			_recruit_hub_deploy(p, color, intent)
+		"artefact_place_special":
+			# Ancient Artifact (Ch.13): discard a face-down Artifact to place 1 Special Unit
+			# from the supply into a space you Control.
+			_recruit_artefact_place_special(p, color, intent)
+
+
+## Guardian Control Room: spawn 1 Guardian into a face-up `func_guardian_control_room`
+## room the player Controls. `intent.room` (HexCoord) names the room.
+func _recruit_control_room_spawn(_p, color: StringName, intent: Dictionary) -> bool:
+	var room = intent.get("room")
+	if not (room is HexCoord):
+		return false
+	var cell: HexCell = state.get_cell(room)
+	if cell == null:
+		return false
+	if not cell.has_token_effect(&"func_guardian_control_room", true):
+		return false
+	if not _player_controls(color, room):
+		return false
+	return guardians.spawn_into_cell(state, room) != null
+
+
+## Teleporter Hub: Deploy this player's drawn Units into the Hub space (Controlled) and
+## Activate it, instead of the Rally Zone. `intent.room` (HexCoord) names the Hub.
+func _recruit_hub_deploy(p, color: StringName, intent: Dictionary) -> bool:
+	var room = intent.get("room")
+	if not (room is HexCoord):
+		return false
+	var cell: HexCell = state.get_cell(room)
+	if cell == null or not cell.has_token_effect(&"func_teleporter_hub", true):
+		return false
+	if not _player_controls(color, room):
+		return false
+	var deployed: Array = p.deploy(state.rng)
+	for unit_id in deployed:
+		var data = unit_db.get(unit_id, null)
+		cell.add_unit(color, {"data": data, "damage": 0})
+	# Activate the Hub space (rulebook).
+	cell.set_token_state(color, HexCell.TokenState.ACTIVE)
+	if state.has_method("note_activation"):
+		state.note_activation(color, room)
+	return true
+
+
+## Ancient Artifact: discard a face-down Artifact to place one Special Unit (from supply)
+## into a Controlled space. `intent.special_id` (StringName) + `intent.space` (HexCoord).
+func _recruit_artefact_place_special(p, color: StringName, intent: Dictionary) -> bool:
+	var special_id = intent.get("special_id")
+	var space = intent.get("space")
+	if special_id == null or not (space is HexCoord):
+		return false
+	if p.artefacts.is_empty():
+		return false
+	if not _player_controls(color, space):
+		return false
+	if not (special_id in [&"berserker", &"manstopper", &"infiltrator", &"sapperteur"]):
+		return false
+	var cell: HexCell = state.get_cell(space)
+	var data = unit_db.get(special_id, null)
+	if cell == null or data == null:
+		return false
+	# Discard one face-down Artifact (any) to pay the cost.
+	p.artefacts.pop_back()
+	cell.add_unit(color, {"data": data, "damage": 0})
+	return true
+
+
+## Control check that tolerates a bare GameState OR a Player-only test double.
+func _player_controls(color: StringName, coord: HexCoord) -> bool:
+	if state.has_method("player_controls"):
+		return state.player_controls(color, coord)
+	var p = state.get_player(color)
+	return p != null and p.controls(coord)
 
 
 ## Place freshly-deployed Units onto the player's Rally Zone cell as live unit
@@ -150,6 +233,8 @@ func run_action_phase() -> void:
 						p.hand.remove_at(idx)   # Movement-card effect wired in Section F
 				"move_attack":
 					ActionResolver.resolve_move_attack(state, color, intent)
+				"ranged_attack":
+					ActionResolver.resolve_ranged_attack(state, color, intent)
 				_:
 					passed[color] = true
 			safety += 1
@@ -243,13 +328,28 @@ func run_cleanup() -> void:
 	for p in state.players:
 		p.control_set.clear()
 
+	# Dehydration (Ch.13): a dehydrated player keeps their LAST Activation token face-up
+	# into the next round. Gather those keep-coords (by hexkey) before the board loop so
+	# the Activation-removal step can spare them.
+	var dehydration_keep: Dictionary = {}   # color -> hexkey to keep ACTIVE
+	for p in state.players:
+		var col: StringName = p.color
+		if state.has_method("dehydration_keep_coord"):
+			var keep = state.dehydration_keep_coord(col)
+			if keep != null:
+				dehydration_keep[col] = keep.key()
+
 	for k in state.board.keys():
 		var cell: HexCell = state.board[k]
 		var coord := HexCoord.from_key(k)
 
 		# Remove face-up Activation tokens (keep face-down Control; we recompute it).
+		# EXCEPTION (Dehydration): leave a dehydrated player's recorded last Activation
+		# token face-up — it persists into the next round (Ch.13).
 		for owner in cell.token_state.keys():
 			if cell.get_token_state(owner) == HexCell.TokenState.ACTIVE:
+				if dehydration_keep.get(owner, "") == k:
+					continue   # dehydrated: keep this one face-up
 				cell.set_token_state(owner, HexCell.TokenState.NONE)
 
 		# Discard spent Environment tokens: a face-up env token that has done its job
@@ -283,11 +383,16 @@ func run_cleanup() -> void:
 				occupants.append(owner)
 		if not has_guardian and occupants.size() == 1:
 			var sole: StringName = occupants[0]
-			cell.set_token_state(sole, HexCell.TokenState.CONTROL)
-			var p = state.get_player(sole)
-			if p != null:
-				p.mark_control(coord)
-				_emit("control_changed", [coord, sole])
+			# If this is the dehydrated player's kept Activation token, leave it ACTIVE —
+			# do NOT convert it to Control this round.
+			if dehydration_keep.get(sole, "") == k and cell.get_token_state(sole) == HexCell.TokenState.ACTIVE:
+				pass
+			else:
+				cell.set_token_state(sole, HexCell.TokenState.CONTROL)
+				var p = state.get_player(sole)
+				if p != null:
+					p.mark_control(coord)
+					_emit("control_changed", [coord, sole])
 		else:
 			# No sole occupant -> ensure no stale Control token lingers here.
 			for owner in cell.token_state.keys().duplicate():
@@ -297,6 +402,14 @@ func run_cleanup() -> void:
 	# 4. Pass the First Player token clockwise (next in turn order).
 	if not state.turn_order.is_empty():
 		first_player_index = (first_player_index + 1) % state.turn_order.size()
+
+	# 5. Reset Dehydration + last-activation tracking for the new round (the keep, if any,
+	#    has now been honoured above).
+	if state.has_method("clear_dehydration"):
+		state.clear_dehydration()
+	# 6. Reset Sunstone Fragments marks (round-scoped Artifact effect).
+	if state.has_method("clear_sunstone_marks"):
+		state.clear_sunstone_marks()
 
 
 ## True if a flipped Environment token stays in its room (Darkness / Tough Terrain /

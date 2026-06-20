@@ -20,8 +20,13 @@ class_name Agent
 ## Recruitment intent. The FSM has already dealt this player their Action card.
 ##   {
 ##     "play_recruitment_card": int or -1,   # hand index of a Recruitment card to play, or -1
-##     "choice": "deploy" | "recruit" | "punish",
+##     "choice": "deploy" | "recruit" | "punish"
+##             | "control_room_spawn" | "hub_deploy" | "artefact_place_special",
 ##     "recruit_ids": Array[StringName],      # only for "recruit": which units to add
+##     # Function/Artifact recruitment actions (Ch.13), each gated on Control:
+##     "room": HexCoord,                      # control_room_spawn / hub_deploy: the Function room
+##     "special_id": StringName,              # artefact_place_special: which Special Unit
+##     "space": HexCoord,                     # artefact_place_special: Controlled space to place it
 ##   }
 ## `state` is a read-only view (the live GameState) so an agent can inspect its bag.
 func decide_recruitment(state, color: StringName) -> Dictionary:
@@ -36,6 +41,9 @@ func decide_recruitment(state, color: StringName) -> Dictionary:
 ##      "activate": HexCoord,                                  # space to Activate
 ##      "moves": Array of {"from": HexCoord, "unit": <unit dict>},  # units to pull in
 ##      "carry_old_tech": bool}                                # carry Old Tech when leaving (needs Control)
+##   {"type": "ranged_attack",                                 # Ch.11: fire WITHOUT moving in
+##      "activate": HexCoord,                                  # your space holding Ranged Units
+##      "target": HexCoord}                                    # enemy space within Range (no LoS)
 func decide_action(state, color: StringName) -> Dictionary:
 	return {"type": "pass"}
 

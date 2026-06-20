@@ -232,6 +232,25 @@ static func _resolve_func(state, cell: HexCell, color: StringName, token: Dictio
 
 
 # ---------------------------------------------------------------------------
+#  Ground-defense bonus (control + Shield Drones) — env damage respects it too
+# ---------------------------------------------------------------------------
+
+## +1 if `color` Controls the space (face-down Control token) AND +1 per Shield Drone
+## present — these STACK, matching CombatResolver._ground_defense_bonus and
+## ActionResolver._prune_dead. Room-hazard dice now use base + this bonus (Corin ruling
+## 2026-06-18: controlled ground / drones DO protect against environmental damage).
+static func _ground_defense_bonus(cell: HexCell, color: StringName) -> int:
+	var bonus := 0
+	if cell.get_token_state(color) == HexCell.TokenState.CONTROL:
+		bonus += 1
+	for owner in cell.units.keys():
+		for u in cell.units[owner]:
+			if u["data"] != null and u["data"].get("grants_ground_defense"):
+				bonus += 1
+	return bonus
+
+
+# ---------------------------------------------------------------------------
 #  Dice / damage (one-sided environmental attacks)
 # ---------------------------------------------------------------------------
 
@@ -290,14 +309,16 @@ static func _roll_hits(rng, dice: int) -> int:
 ## next Unit is touched. Then prune the dead.
 static func _apply_hits_minimise(cell: HexCell, color: StringName, hits: int) -> void:
 	var arr: Array = cell.units_for(color)
+	var bonus := _ground_defense_bonus(cell, color)
 	var remaining := hits
 	while remaining > 0 and not arr.is_empty():
 		# Find the unit closest to dying (smallest remaining HP), tie-break by order.
+		# Effective HP = base Defense + controlled-ground / Shield-Drone bonus.
 		var best_i := -1
 		var best_remaining := 1 << 30
 		for i in range(arr.size()):
 			var u = arr[i]
-			var def: int = u["data"].defense if u["data"] != null else 1
+			var def: int = (u["data"].defense if u["data"] != null else 1) + bonus
 			var rem: int = def - int(u.get("damage", 0))
 			if rem > 0 and rem < best_remaining:
 				best_remaining = rem
@@ -305,7 +326,7 @@ static func _apply_hits_minimise(cell: HexCell, color: StringName, hits: int) ->
 		if best_i == -1:
 			break
 		var unit = arr[best_i]
-		var def2: int = unit["data"].defense if unit["data"] != null else 1
+		var def2: int = (unit["data"].defense if unit["data"] != null else 1) + bonus
 		var need: int = def2 - int(unit.get("damage", 0))
 		var apply: int = min(need, remaining)
 		unit["damage"] = int(unit.get("damage", 0)) + apply
@@ -313,16 +334,17 @@ static func _apply_hits_minimise(cell: HexCell, color: StringName, hits: int) ->
 	_prune_dead_for(cell, color)
 
 
-## Remove `color`'s Units whose damage >= their (base) Defense. Environmental attacks
-## ignore the control/drone +1 ground bonus — those are combat-defence buffs, not
-## protection from the room itself. (If you want them to apply, this is the one place
-## to add the bonus; left base to match "the room hurts you regardless of footing.")
+## Remove `color`'s Units whose damage >= their EFFECTIVE Defense (base + controlled-
+## ground / Shield-Drone bonus). Per Corin's ruling (2026-06-18) environmental attacks
+## DO respect that +1 — controlled ground and drones protect against room hazards too,
+## matching combat's death rule (CombatResolver._ground_defense_bonus).
 static func _prune_dead_for(cell: HexCell, color: StringName) -> void:
 	if not cell.units.has(color):
 		return
+	var bonus := _ground_defense_bonus(cell, color)
 	var survivors := []
 	for u in cell.units[color]:
-		var def: int = u["data"].defense if u["data"] != null else 1
+		var def: int = (u["data"].defense if u["data"] != null else 1) + bonus
 		if int(u.get("damage", 0)) < def:
 			survivors.append(u)
 	if survivors.is_empty():

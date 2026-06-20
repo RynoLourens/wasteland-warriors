@@ -104,16 +104,19 @@ intended starting bag** and I'll update it + the test together.
 
 ## Still open (not started this pass)
 
-- ⬜ **Recruitment-phase Function use** — Guardian Control Room / Teleporter Hub menu
-  options (see ⚠️ above).
-- ⬜ **Bauble / Artefact deck** — `draw_artefact` is an injected hook that currently
-  no-ops (Baubles are deferred per the v1 scope). Wire the deck to activate Ancient
-  Artifact + the Artefact-on-Function-flip draw.
-- ⬜ **`env_dehydration` Cleanup honour** — `TokenEffects` calls
-  `state.set_dehydration(color)` if present; `GameState` / Cleanup must implement the flag
-  so the last Activation token genuinely stays face-up.
-- ⬜ **Sapperteur unit-triggered Sticky Bomb** — the card version works; the unit ability
-  ("when it stops, you may place a Sticky Bomb") is a separate trigger not on the move path.
+> **UPDATE — Section G (2026-06-18) closed all of the rules items below.** See
+> `SECTION-G-rules-audit-plan.md` for the full record. Engine logic is complete for each;
+> the recruitment Function/Artifact *menu UI* surfacing is the remaining UI-only follow-up.
+
+- ✅ **Recruitment-phase Function use** — `control_room_spawn` / `hub_deploy` /
+  `artefact_place_special` recruitment choices implemented in RoundFSM (Control-gated).
+  *UI to offer them still ⬜.*
+- ✅ **Artifact deck** — `ArtefactEffects` resolves all 5 cards; Ancient Artifact +
+  Function-flip draws are live.
+- ✅ **`env_dehydration` Cleanup honour** — `GameState.set_dehydration` + `note_activation`
+  implemented; RoundFSM Cleanup keeps the dehydrated player's last Activation token face-up.
+- ✅ **Sapperteur unit-triggered Sticky Bomb** — placed on the move path when it stops, and
+  placed bombs now actually trigger combat dice at the entrant (fixed a latent gap).
 - ⬜ **2P / 4P layouts + FAQ** — the only intentionally-deferred v1 items per the build plan.
 
 ---

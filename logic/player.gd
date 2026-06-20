@@ -26,6 +26,9 @@ var hand: Array = []
 ## Special Unit in a controlled space (rulebook). v1 just tracks them.
 var artefacts: Array = []
 
+## Unit ids queued for a FREE redeploy next Recruitment (Medical Machine artifact).
+var pending_redeploys: Array = []
+
 var old_tech_count: int = 0
 
 ## Set of hex keys this player currently Controls (face-down token of theirs).

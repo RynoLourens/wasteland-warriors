@@ -12,7 +12,7 @@ class_name UnitData
 @export var move: int = 1
 @export var attack: int = 1
 @export var defense: int = 1
-@export var range: int = 1
+@export var range: int = 0      ## 0 = melee (no Range); Gunner/Manstopper = 1, Arachnid = 2.
 
 @export_group("Ability flags")
 @export var crit_on: int = 6          ## Berserker = 5 (crits on 5-6).

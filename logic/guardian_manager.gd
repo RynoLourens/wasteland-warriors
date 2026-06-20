@@ -83,6 +83,23 @@ func spawn_into_center(state, count: int) -> Array:
 	return spawned
 
 
+## Spawn one Guardian into an arbitrary `coord` (Guardian Control Room, Ch.13). Draws
+## from the same bag with the same skip-if-empty rule; Scrap fizzles the draw. Returns
+## the spawned unit dict, or null if none was placed.
+func spawn_into_cell(state, coord: HexCoord):
+	var cell: HexCell = state.get_cell(coord)
+	if cell == null or guardians_in_bag() == 0:
+		return null
+	var token = _draw()
+	if not (token is Resource):
+		bag.append(SCRAP)
+		return null
+	var unit := {"data": token, "damage": 0}
+	cell.add_unit(GUARDIAN_OWNER, unit)
+	_emit(state, "guardian_spawned", [token, coord])
+	return unit
+
+
 func _draw():
 	var idx := rng.randi_range(0, bag.size() - 1)
 	var token = bag[idx]

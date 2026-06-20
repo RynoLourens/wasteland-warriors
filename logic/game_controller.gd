@@ -277,6 +277,11 @@ func _action_phase() -> void:
 						if result.get("ok", false):
 							await _handle_center_entry(color, result.get("dest_coord"))
 						turn_done = result.get("ok", false)   # illegal -> re-ask
+					"ranged_attack":
+						# One-sided ranged fire (Ch.11): immediate, no deferred combat window.
+						var r_result: Dictionary = ActionResolver.resolve_ranged_attack(state, color, intent)
+						emit_signal("action_resolved", color, r_result)
+						turn_done = r_result.get("ok", false)   # illegal -> re-ask
 					_:
 						passed[color] = true
 						turn_done = true
