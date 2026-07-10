@@ -124,7 +124,20 @@ func _rebuild_strip() -> void:
 		cu.tapped.connect(_on_card_tapped.bind(i))
 		_strip.add_child(cu)
 		_card_widgets.append(cu)
+		_animate_card_in(cu, i)   # Section G.2: cards slide up + fade in (staggered)
 	_scroll.visible = _strip_visible
+
+
+## A card draw flourish: each card rises into place and fades in, slightly
+## staggered so a fresh hand deals in rather than snapping.
+func _animate_card_in(cu: Control, idx: int) -> void:
+	cu.modulate.a = 0.0
+	cu.position.y = 24.0
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(cu, "modulate:a", 1.0, 0.22).set_delay(0.03 * float(idx))
+	tw.tween_property(cu, "position:y", 0.0, 0.26) \
+		.set_delay(0.03 * float(idx)).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 
 func _on_toggle() -> void:
@@ -171,6 +184,9 @@ func _play_selected() -> void:
 	var card = _player.hand[idx]
 	_deselect()
 	if card != null:
+		var am = get_node_or_null("/root/AudioManager")
+		if am != null:
+			am.cue("card_played")
 		play_card.emit(card, idx)
 
 

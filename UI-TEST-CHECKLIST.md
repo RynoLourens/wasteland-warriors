@@ -123,6 +123,57 @@ matches (highest die roll wins it), not always be the same seat.
 
 ---
 
+## H. Section G — Art, animation & juice (the graphics pass)
+
+This is the build plan's **Section G** (graphics/feel), distinct from the rules-audit items above.
+Setup: any 3-player match. "Done when a stranger watching can follow a combat without narration."
+
+**H1 — Real art on the board.** ☐
+Tiles show the room/corridor/center artwork (not grey hexes). Unit and Guardian tokens show their
+real token art; action cards in hand show their card fronts; env/function tokens show their art
+face-up and a token back face-down; Old Tech shows its token icon with a ×N count.
+
+**H2 — Known greybox fallbacks are intentional.** ☐
+The **Razor** Guardian, **Lil' Minerva** Leader, and the **Ancient Artifact / Falling Debris** env
+tokens have no art yet and fall back to grey shapes / text chips. Nothing crashes or shows a
+"missing texture" error. (Add those files later and they'll wire automatically.)
+
+**H3 — Tokens slide when they move.** ☐
+Moving a Unit slides it from its old space to the new one (a short ~0.3s glide), rather than
+snapping. Token flips and control changes give a small "pop".
+
+**H4 — Guardians step one at a time.** ☐
+During the Guardian phase, Guardians move **one space at a time, one Guardian at a time**, with a
+brief pause between hops — building tension before they attack.
+
+**H5 — Combat plays back legibly.** ☐
+The combat readout reveals events **one at a time** (not all at once). Crits and deaths **pop**
+and linger. **SPEED** cycles 1x/2x/4x; **SKIP** jumps to the end; when finished, SKIP becomes
+**REPLAY**.
+
+**H6 — Cards deal in.** ☐
+When a hand is shown, cards **rise and fade in**, slightly staggered, rather than appearing
+instantly.
+
+**H7 — Info panel surfaces hidden info.** ☐
+The top-right **ℹ INFO** toggle opens a panel showing, per player: Old Tech (★ N/3), hand size,
+bag size + Coward count, **next-draw Coward odds %**, artifacts, and the units left in the bag.
+
+**H8 — Theme is consistent.** ☐
+Buttons share one style (rounded, hover highlight); fonts/colors look uniform across HUD, hand,
+panels, and dialogs.
+
+**H9 — Accessibility (color is never the only cue).** ☐
+Each unit token shows a small high-contrast **owner initial** (G/B/R). Activation = triangle,
+Control = diamond (shape, not just color). The info panel uses a ◆ swatch + the color's name.
+Check token numbers/icons are readable at arm's length on a phone.
+
+**H10 — Haptics & audio hooks (optional audio).** ☐
+On a phone, key actions (move, flip, combat, card play) give a short **vibration**. The game is
+fully playable **muted** (no audio files ship in v1; the AudioManager is wired for drop-in later).
+
+---
+
 ## How to report
 For any ✗, note: what you did, what you expected, what happened, and (if visible) any error in
 the Godot output console. Paste those back and I'll fix them.

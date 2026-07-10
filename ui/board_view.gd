@@ -47,6 +47,11 @@ var _reveal_order: Array = []       # Array of hexkey, centre-out (for animation
 var _revealing := false
 var _reveal_tween: Tween = null     # master cadence tween (killed on skip)
 
+# Section G.2/G.3: movement playback. Moves are queued so guardians step one at
+# a time; each is animated as a sliding ghost token then the cells redraw.
+var _move_queue: Array = []
+var _move_playing := false
+
 # Interaction (the click-driven Move-and-Attack flow) ----------------------
 var _human_color: StringName = &"green"   # whose turn we're driving by hand
 var _selected_activate: HexCoord = null   # the space being activated
@@ -58,6 +63,7 @@ var _hud: GameHUD = null
 var _recruit_panel: RecruitmentPanel = null
 var _hand_panel: HandPanel = null
 var _combat_readout: CombatReadout = null
+var _info_panel: InfoPanel = null
 var _win_screen: WinScreen = null
 
 # Zoom / pan (Fix G). scale = _fit_scale * _zoom; position = band - center*scale + pan.
@@ -125,6 +131,10 @@ func _ready() -> void:
 	add_child(_combat_readout)
 	_win_screen = WinScreen.new()
 	add_child(_win_screen)
+
+	# Section G.4: hidden-info panel (bag odds, deck/hand, Old Tech per player).
+	_info_panel = InfoPanel.new()
+	add_child(_info_panel)
 
 	# Fix H: provide the per-round combat-card window to the controller.
 	if _controller_match_active():
@@ -226,6 +236,23 @@ func _build_board_nodes() -> void:
 		_hex_root.add_child(poly)
 		_hex_nodes[coord.key()] = poly
 
+		# Real tile art on top of the greybox poly (Section G.1). A sprite covering
+		# the cell; the poly stays underneath so rally tints and the reachable /
+		# activate overlays (which modulate the poly) still read.
+		var tile_tex := _tile_art(coord, cell)
+		if tile_tex != null:
+			var spr := Sprite2D.new()
+			spr.texture = tile_tex
+			# Child of `poly` (already at `pos`), so its LOCAL position is zero —
+			# Sprite2D centres on its origin, which lines up with the hex centre.
+			spr.position = Vector2.ZERO
+			var tw: float = float(tile_tex.get_width())
+			if tw > 0.0:
+				var sc := (HEX_W * 1.02) / tw
+				spr.scale = Vector2(sc, sc)
+			poly.color = poly.color.darkened(0.15)
+			poly.add_child(spr)
+
 		# Edge outline + open-exit markers (so a tester can see connectivity).
 		_draw_cell_edges(poly, cell, corners)
 
@@ -267,6 +294,19 @@ func _tile_color(coord: HexCoord, cell: HexCell) -> Color:
 			return COL_CORRIDOR
 		_:
 			return COL_ROOM
+
+
+## Tile face texture for a coord (deterministic per hex), or null for greybox.
+func _tile_art(coord: HexCoord, cell: HexCell) -> Texture2D:
+	var tt := "room"
+	match cell.tile_type:
+		HexCell.TileType.CENTER:
+			tt = "center"
+		HexCell.TileType.CORRIDOR:
+			tt = "corridor"
+		_:
+			tt = "room"
+	return ArtRegistry.tile(tt, coord.q, coord.r)
 
 
 func _draw_cell_edges(poly: Polygon2D, cell: HexCell, corners: PackedVector2Array) -> void:
@@ -865,10 +905,14 @@ func _on_guardian_spawned(_guardian, _coord) -> void:
 ## Old Tech dropped where a Guardian died — refresh so the OT badge appears.
 func _on_old_tech_captured(_player, _coord) -> void:
 	_redraw_all_cells()
+	if _info_panel != null:
+		_info_panel.refresh()
 
 
 func _on_round_completed(_round_number: int) -> void:
 	_redraw_all_cells()
+	if _info_panel != null:
+		_info_panel.refresh()
 
 
 func _redraw_all_cells() -> void:
@@ -900,13 +944,14 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 	if cell == null:
 		return
 
-	# Faint coord label (top of hex) — handy while debugging the greybox.
-	var clabel := Label.new()
-	clabel.text = "%d,%d" % [coord.q, coord.r]
-	clabel.add_theme_font_size_override("font_size", 11)
-	clabel.modulate = Color(1, 1, 1, 0.35)
-	clabel.position = Vector2(-HEX_SIZE * 0.5, -HEX_H * 0.5 + 2)
-	ov.add_child(clabel)
+	# Faint coord label — a greybox debugging aid; suppressed once tile art shows.
+	if not ArtRegistry.any_art_present():
+		var clabel := Label.new()
+		clabel.text = "%d,%d" % [coord.q, coord.r]
+		clabel.add_theme_font_size_override("font_size", 11)
+		clabel.modulate = Color(1, 1, 1, 0.35)
+		clabel.position = Vector2(-HEX_SIZE * 0.5, -HEX_H * 0.5 + 2)
+		ov.add_child(clabel)
 
 	# Units as labelled rectangles, laid out in a small centred grid per cell. We
 	# record each unit's local rect so clicks can resolve to an individual unit
@@ -924,7 +969,7 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 	for slot in range(total):
 		var e = flat[slot]
 		var staged := _is_unit_staged(coord, e["unit"])
-		var r := _add_unit_rect(ov, e["col"], _unit_label(e["unit"]), slot, total, staged)
+		var r := _add_unit_rect(ov, e["col"], _unit_label(e["unit"]), slot, total, staged, _unit_art(e["unit"]), str(e["owner"]).substr(0, 1).to_upper())
 		rect_list.append({"unit": e["unit"], "owner": e["owner"], "rect": r})
 	_unit_rects[coord.key()] = rect_list
 
@@ -942,20 +987,37 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 	# unit stack (centre) and the token chips / name labels (lower-left). High contrast
 	# so the objective tokens are obvious.
 	if cell.old_tech > 0:
-		var ot := Label.new()
-		ot.text = "★ OT×%d" % cell.old_tech
-		ot.add_theme_font_size_override("font_size", 14)
-		ot.modulate = Color(0.10, 0.10, 0.06)
-		var otsb := StyleBoxFlat.new()
-		otsb.bg_color = Color(0.95, 0.82, 0.30, 0.97)
-		otsb.set_corner_radius_all(8)
-		otsb.content_margin_left = 7
-		otsb.content_margin_right = 7
-		otsb.content_margin_top = 1
-		otsb.content_margin_bottom = 1
-		ot.add_theme_stylebox_override("normal", otsb)
-		ot.position = Vector2(-22, -HEX_H * 0.5 + 6)
-		ov.add_child(ot)
+		var ot_tex: Texture2D = ArtRegistry.misc(&"old_tech")
+		if ot_tex != null:
+			var otspr := TextureRect.new()
+			otspr.texture = ot_tex
+			otspr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			otspr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			otspr.size = Vector2(20, 20)
+			otspr.position = Vector2(-26, -HEX_H * 0.5 + 4)
+			otspr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			ov.add_child(otspr)
+			var otc := Label.new()
+			otc.text = "×%d" % cell.old_tech
+			otc.add_theme_font_size_override("font_size", 13)
+			otc.modulate = Color(0.98, 0.88, 0.45)
+			otc.position = Vector2(-4, -HEX_H * 0.5 + 5)
+			ov.add_child(otc)
+		else:
+			var ot := Label.new()
+			ot.text = "★ OT×%d" % cell.old_tech
+			ot.add_theme_font_size_override("font_size", 14)
+			ot.modulate = Color(0.10, 0.10, 0.06)
+			var otsb := StyleBoxFlat.new()
+			otsb.bg_color = Color(0.95, 0.82, 0.30, 0.97)
+			otsb.set_corner_radius_all(8)
+			otsb.content_margin_left = 7
+			otsb.content_margin_right = 7
+			otsb.content_margin_top = 1
+			otsb.content_margin_bottom = 1
+			ot.add_theme_stylebox_override("normal", otsb)
+			ot.position = Vector2(-22, -HEX_H * 0.5 + 6)
+			ov.add_child(ot)
 
 	# Environment / Function tokens. Face-DOWN: a generic "?" chip tinted by kind so
 	# you can see a space has an unexplored token. Face-UP: the effect's short name.
@@ -975,6 +1037,11 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 		sb.content_margin_right = 5
 		sb.content_margin_top = 1
 		sb.content_margin_bottom = 1
+		var tok_art: Texture2D = null
+		if face_up:
+			tok_art = _token_art(kind, data)
+		else:
+			tok_art = _token_back_art(kind, data)
 		if face_up:
 			chip.text = _token_short_name(data)
 			sb.bg_color = Color(0.12, 0.13, 0.16, 0.92)
@@ -984,10 +1051,21 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 			sb.bg_color = _token_kind_color(kind, data)
 			sb.bg_color.a = 0.85
 			chip.modulate = Color(1, 1, 1, 0.95)
-		chip.add_theme_stylebox_override("normal", sb)
 		var chip_pos := Vector2(-HEX_SIZE * 0.5 + 4, HEX_H * 0.5 - 20 - tok_i * 16)
-		chip.position = chip_pos
-		ov.add_child(chip)
+		if tok_art != null:
+			var ts := 22.0
+			var tspr := TextureRect.new()
+			tspr.texture = tok_art
+			tspr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			tspr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			tspr.size = Vector2(ts, ts)
+			tspr.position = chip_pos
+			tspr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			ov.add_child(tspr)
+		else:
+			chip.add_theme_stylebox_override("normal", sb)
+			chip.position = chip_pos
+			ov.add_child(chip)
 		# Record an overlay-local hit-rect so hover can show the effect text (a bit
 		# wider than the glyph so it's easy to land on).
 		_token_rects[coord.key()].append({
@@ -1011,6 +1089,27 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 
 	# Activation / Control token markers per owner.
 	_draw_token_markers(ov, cell)
+
+
+## Face-up token art for an env/func token, or null (text-chip fallback).
+func _token_art(kind: String, data) -> Texture2D:
+	if data == null or not ("id" in data):
+		return null
+	if kind == "func":
+		return ArtRegistry.func_token(data.id)
+	return ArtRegistry.env(data.id)
+
+
+## Face-down token back art, keyed by kind/category. Null -> "?" chip.
+func _token_back_art(kind: String, data) -> Texture2D:
+	if kind == "func":
+		return ArtRegistry._tex("tokens/func/_back.png")
+	var category := ""
+	if data != null and "category" in data:
+		category = str(data.category)
+	if category == "Corridor":
+		return ArtRegistry._tex("tokens/env/_corridor_back.png")
+	return ArtRegistry._tex("tokens/env/_room_back.png")
 
 
 ## Tint for an env/func token chip: blue = corridor env, orange = room env,
@@ -1042,7 +1141,7 @@ func _token_short_name(data) -> String:
 
 ## Draws one unit token (centred grid). Returns its Rect2 (overlay-local) for
 ## click hit-testing. `slot` is the unit's index, `total` the count in the cell.
-func _add_unit_rect(ov: Node2D, col: Color, label_text: String, slot: int, total: int, staged: bool) -> Rect2:
+func _add_unit_rect(ov: Node2D, col: Color, label_text: String, slot: int, total: int, staged: bool, art: Texture2D = null, owner_initial: String = "") -> Rect2:
 	var w := 26.0
 	var h := 18.0
 	var gap := 3.0
@@ -1062,11 +1161,36 @@ func _add_unit_rect(ov: Node2D, col: Color, label_text: String, slot: int, total
 	var cy := -block_h * 0.5 + float(row) * (h + gap)
 	var pos := Vector2(cx, cy)
 
+	# Owner-colour backing plate. With art it becomes a thin coloured border so
+	# ownership still reads (accessibility: never the sprite alone); greybox = token.
 	var rect := ColorRect.new()
 	rect.color = col
 	rect.size = Vector2(w, h)
 	rect.position = pos
 	ov.add_child(rect)
+
+	if art != null:
+		var pad := 2.0
+		var tr := TextureRect.new()
+		tr.texture = art
+		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		tr.size = Vector2(w - pad * 2.0, h - pad * 2.0)
+		tr.position = pos + Vector2(pad, pad)
+		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		ov.add_child(tr)
+		# Accessibility floor: a high-contrast owner initial so ownership reads even
+		# when colour can't be told apart (colourblind) — colour is never the only cue.
+		if owner_initial != "":
+			var oi := Label.new()
+			oi.text = owner_initial
+			oi.add_theme_font_size_override("font_size", 9)
+			oi.add_theme_color_override("font_color", Color(1, 1, 1, 0.95))
+			oi.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+			oi.add_theme_constant_override("outline_size", 3)
+			oi.position = pos + Vector2(-1, -3)
+			oi.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			ov.add_child(oi)
 
 	# Bright outline when this unit is staged to move.
 	if staged:
@@ -1080,14 +1204,29 @@ func _add_unit_rect(ov: Node2D, col: Color, label_text: String, slot: int, total
 		outline.add_point(pos + Vector2(0, h))
 		ov.add_child(outline)
 
-	var lbl := Label.new()
-	lbl.text = label_text
-	lbl.add_theme_font_size_override("font_size", 10)
-	lbl.modulate = Color(0, 0, 0, 0.9)
-	lbl.position = pos + Vector2(2, 1)
-	ov.add_child(lbl)
+	# Greybox text label only when there's no art to show.
+	if art == null:
+		var lbl := Label.new()
+		lbl.text = label_text
+		lbl.add_theme_font_size_override("font_size", 10)
+		lbl.modulate = Color(0, 0, 0, 0.9)
+		lbl.position = pos + Vector2(2, 1)
+		ov.add_child(lbl)
 
 	return Rect2(pos, Vector2(w, h))
+
+
+## Texture for a unit/guardian, or null (greybox fallback). Cell units are dicts
+## {data: UnitData}; guardians may be bare resources.
+func _unit_art(unit) -> Texture2D:
+	var data = unit.get("data") if unit is Dictionary else unit
+	if data == null or not (data is Resource) or not ("id" in data):
+		return null
+	var uid = data.id
+	var t: Texture2D = ArtRegistry.unit(uid)
+	if t == null:
+		t = ArtRegistry.guardian(uid)
+	return t
 
 
 func _draw_token_markers(ov: Node2D, cell: HexCell) -> void:
@@ -2029,27 +2168,117 @@ func _add_hilite_colored(coord: HexCoord, col: Color) -> void:
 #  EventBus handlers — the ONLY way visuals change after a logic mutation
 # ---------------------------------------------------------------------------
 
-func _on_unit_moved(_unit, from_coord, to_coord) -> void:
-	if from_coord is HexCoord:
-		_redraw_cell_overlay(from_coord)
-	if to_coord is HexCoord:
+func _on_unit_moved(unit, from_coord, to_coord) -> void:
+	# Section G.2/G.3: instead of snapping, slide a ghost token from->to so the
+	# move reads. Guardian hops are queued so they step ONE space at a time, ONE
+	# Guardian at a time (the deferred Guardian step-movement playback).
+	if not (from_coord is HexCoord) or not (to_coord is HexCoord):
+		if from_coord is HexCoord:
+			_redraw_cell_overlay(from_coord)
+		if to_coord is HexCoord:
+			_redraw_cell_overlay(to_coord)
+		return
+	var is_guardian := _move_is_guardian(unit)
+	_move_queue.append({"unit": unit, "from": from_coord, "to": to_coord, "guardian": is_guardian})
+	if not _move_playing:
+		_drain_move_queue()
+
+
+## Owner check: guardians animate with a between-hop pause for tension.
+func _move_is_guardian(unit) -> bool:
+	var data = unit.get("data") if unit is Dictionary else unit
+	if data != null and "id" in data and ArtRegistry.guardian(data.id) != null:
+		return true
+	return false
+
+
+## Play queued moves in order. Guardian hops get a brief pause between them.
+func _drain_move_queue() -> void:
+	if _move_queue.is_empty():
+		_move_playing = false
+		return
+	_move_playing = true
+	var m = _move_queue.pop_front()
+	_animate_move(m["unit"], m["from"], m["to"], m["guardian"])
+
+
+## Slide a transient ghost token between two cells, then redraw both. The real
+## tokens live in per-cell overlays (rebuilt on redraw); the ghost is purely the
+## in-between flourish, so logic stays authoritative.
+func _animate_move(unit, from_coord: HexCoord, to_coord: HexCoord, is_guardian: bool) -> void:
+	var p0 := _hex_to_pixel(from_coord.q, from_coord.r)
+	var p1 := _hex_to_pixel(to_coord.q, to_coord.r)
+	# Hide the moving unit at the source immediately so it doesn't double up.
+	_redraw_cell_overlay(from_coord)
+	var ghost := _make_move_ghost(unit)
+	ghost.position = p0
+	_overlay_root.add_child(ghost)
+	var dur := 0.28
+	if is_guardian:
+		dur = 0.34
+	var tw := create_tween()
+	tw.tween_property(ghost, "position", p1, dur) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	var pause := 0.16 if is_guardian else 0.02
+	tw.tween_interval(pause)
+	tw.finished.connect(func ():
+		if is_instance_valid(ghost):
+			ghost.queue_free()
 		_redraw_cell_overlay(to_coord)
+		_drain_move_queue())
+
+
+## A small sprite (or greybox rect) standing in for the moving unit.
+func _make_move_ghost(unit) -> Node2D:
+	var holder := Node2D.new()
+	var art := _unit_art(unit)
+	if art != null:
+		var tr := TextureRect.new()
+		tr.texture = art
+		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		tr.size = Vector2(28, 28)
+		tr.position = Vector2(-14, -14)
+		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		holder.add_child(tr)
+	else:
+		var rect := ColorRect.new()
+		rect.color = Color(0.95, 0.95, 0.55)
+		rect.size = Vector2(24, 18)
+		rect.position = Vector2(-12, -9)
+		holder.add_child(rect)
+	return holder
 
 
 func _on_token_flipped(coord, _player, _new_state) -> void:
 	if coord is HexCoord:
 		_redraw_cell_overlay(coord)
+		_pop_cell_overlay(coord)
 
 
 func _on_control_changed(coord, _player) -> void:
 	if coord is HexCoord:
 		_redraw_cell_overlay(coord)
+		_pop_cell_overlay(coord)
+
+
+## Section G.2: a quick scale pop on a cell's overlay so flips/captures register.
+func _pop_cell_overlay(coord: HexCoord) -> void:
+	var ov: Node2D = _overlays.get(coord.key())
+	if ov == null or not is_instance_valid(ov):
+		return
+	ov.scale = Vector2(1.18, 1.18)
+	var tw := create_tween()
+	tw.tween_property(ov, "scale", Vector2.ONE, 0.22) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 
 func _on_combat_resolved(event_log) -> void:
 	# Refresh every cell so deaths show.
 	for k in GameState.board.keys():
 		_redraw_cell_overlay(HexCoord.from_key(k))
+	if _info_panel != null:
+		_info_panel.refresh()
 	# Section F Piece 6: show the plain text/number readout of the resolver's log.
 	# (Section G replaces this static list with animated playback.)
 	if event_log is Array and not event_log.is_empty() and _combat_readout != null:

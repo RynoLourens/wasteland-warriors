@@ -24,7 +24,9 @@ config/icon="res://icon.svg"
 
 EventBus="*res://autoload/event_bus.gd"
 GameState="*res://autoload/game_state.gd"
+ArtRegistry="*res://autoload/art_registry.gd"
 GameController="*res://logic/game_controller.gd"
+AudioManager="*res://autoload/audio_manager.gd"
 
 [display]
 
@@ -37,6 +39,10 @@ window/handheld/orientation=1
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/gut/plugin.cfg")
+
+[gui]
+
+theme/custom="res://ui/game_theme.tres"
 
 [rendering]
 

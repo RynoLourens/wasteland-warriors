@@ -52,6 +52,22 @@ func _build(card_size: Vector2) -> void:
 	_panel.add_theme_stylebox_override("panel", _sb)
 	add_child(_panel)
 
+	# Real card art (Section G.1). When present, the artwork carries the name,
+	# type and rules text, so we show the image full-bleed and skip the greybox
+	# labels. Missing art (e.g. a not-yet-drawn card) keeps the text shell.
+	var art: Texture2D = null
+	if card != null and "id" in card:
+		art = ArtRegistry.card(card.id)
+	if art != null:
+		var pic := TextureRect.new()
+		pic.texture = art
+		pic.set_anchors_preset(Control.PRESET_FULL_RECT)
+		pic.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		pic.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		pic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(pic)
+		return
+
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 6)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE   # let clicks fall through to this card

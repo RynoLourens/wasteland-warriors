@@ -17,6 +17,27 @@ var _title: Label
 
 const FACE_NAMES := ["", "1", "2", "3", "4", "5", "6"]
 
+# --- Section G.3: animated playback queue --------------------------------
+# Instead of dumping the whole log at once, we reveal one event at a time on a
+# timer so cascading-crit chains are legible. Each queued entry is the Label we
+# pre-built (hidden) plus how long to wait AFTER showing it. A speed toggle
+# scales every delay; SKIP reveals the rest instantly.
+var _queue: Array = []          # [{node: CanvasItem, delay: float}]
+var _play_i: int = 0
+var _play_timer: float = 0.0
+var _playing: bool = false
+var _speed: float = 1.0         # 1x / 2x / 4x cycle
+var _speed_btn: Button
+var _skip_btn: Button
+var _emphasis: Array = []       # nodes to "pop" as they appear (crits/deaths)
+
+# Base per-event delays (seconds at 1x). Crits/deaths linger; misses are quick.
+const DELAY := {
+	"combat_start": 0.55, "round_start": 0.5, "sticky_bomb": 0.4,
+	"hits_first": 0.4, "die_miss": 0.18, "die_hit": 0.3, "die_crit": 0.6,
+	"reroll": 0.3, "hit_assigned": 0.4, "death": 0.7, "combat_end": 0.6,
+}
+
 
 func _ready() -> void:
 	layer = 24   # above the board/hand, below target pickers (26)
@@ -66,13 +87,33 @@ func _build_ui() -> void:
 	_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(_list)
 
+	# Playback controls: SPEED cycles 1x/2x/4x, SKIP reveals the rest at once,
+	# CLOSE dismisses. Big touch targets for the phone-first layout.
+	var btns := HBoxContainer.new()
+	btns.add_theme_constant_override("separation", 12)
+	btns.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	col.add_child(btns)
+
+	_speed_btn = Button.new()
+	_speed_btn.text = "SPEED 1x"
+	_speed_btn.custom_minimum_size = Vector2(150, 52)
+	_speed_btn.add_theme_font_size_override("font_size", 20)
+	_speed_btn.pressed.connect(_on_speed)
+	btns.add_child(_speed_btn)
+
+	_skip_btn = Button.new()
+	_skip_btn.text = "SKIP"
+	_skip_btn.custom_minimum_size = Vector2(120, 52)
+	_skip_btn.add_theme_font_size_override("font_size", 20)
+	_skip_btn.pressed.connect(_on_skip)
+	btns.add_child(_skip_btn)
+
 	var close := Button.new()
 	close.text = "CLOSE"
-	close.custom_minimum_size = Vector2(200, 52)
+	close.custom_minimum_size = Vector2(160, 52)
 	close.add_theme_font_size_override("font_size", 22)
-	close.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	close.pressed.connect(_on_close)
-	col.add_child(close)
+	btns.add_child(close)
 
 
 ## Show the readout for one combat `event_log` (an Array of dicts from the resolver).
@@ -83,6 +124,10 @@ func _build_ui() -> void:
 func show_log(event_log: Array) -> void:
 	for c in _list.get_children():
 		c.queue_free()
+	_queue.clear()
+	_emphasis.clear()
+	_play_i = 0
+	_play_timer = 0.0
 	# 1. Determine the participating sides (from combat_start, else discovered).
 	var sides: Array = []
 	for ev in event_log:
@@ -136,12 +181,19 @@ func show_log(event_log: Array) -> void:
 			# Structural / multi-side row — full width under the columns.
 			lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			_list.add_child(lbl)
+		# Section G.3: start hidden; the playback loop reveals it on a timer.
+		lbl.modulate.a = 0.0
+		lbl.visible = false
+		var emph: bool = _is_emphasis(ev)
+		_queue.append({"node": lbl, "delay": _delay_for(ev), "emph": emph})
 	if not had_any:
 		var none := Label.new()
 		none.text = "(no combat events)"
 		none.modulate = Color(1, 1, 1, 0.6)
 		_list.add_child(none)
 	visible = true
+	_playing = not _queue.is_empty()
+	_update_skip_label()
 
 
 ## Player/guardian colour for a column header.
@@ -226,6 +278,117 @@ func _unit_name(uid) -> String:
 	return str(uid).capitalize() if uid != null else "Unit"
 
 
+# --- Section G.3 playback engine -----------------------------------------
+
+func _process(delta: float) -> void:
+	if not _playing or not visible:
+		return
+	if _play_i >= _queue.size():
+		_playing = false
+		_update_skip_label()
+		return
+	_play_timer -= delta * _speed
+	if _play_timer > 0.0:
+		return
+	# Reveal the next line(s) whose timers have come due.
+	var entry = _queue[_play_i]
+	_reveal(entry)
+	_play_timer = float(entry["delay"])
+	_play_i += 1
+	if _play_i >= _queue.size():
+		_playing = false
+		_update_skip_label()
+
+
+## Fade a queued line in; crit/death lines briefly pop bigger for emphasis.
+func _reveal(entry: Dictionary) -> void:
+	var node = entry["node"]
+	if node == null or not is_instance_valid(node):
+		return
+	node.visible = true
+	var tw := create_tween()
+	tw.tween_property(node, "modulate:a", 1.0, 0.18 / max(_speed, 0.001))
+	if entry.get("emph", false) and node is Control:
+		node.pivot_offset = node.size * 0.5
+		node.scale = Vector2(1.25, 1.25)
+		var pop := create_tween()
+		pop.tween_property(node, "scale", Vector2.ONE, 0.25 / max(_speed, 0.001)) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+
+## Reveal everything remaining at once (SKIP).
+func _skip_to_end() -> void:
+	while _play_i < _queue.size():
+		var e = _queue[_play_i]
+		var node = e["node"]
+		if node != null and is_instance_valid(node):
+			node.visible = true
+			node.modulate.a = 1.0
+		_play_i += 1
+	_playing = false
+	_update_skip_label()
+
+
+func _on_skip() -> void:
+	if _playing or _play_i < _queue.size():
+		_skip_to_end()
+	else:
+		# Playback finished -> the button now reads REPLAY.
+		_replay()
+
+
+func _on_speed() -> void:
+	# Cycle 1x -> 2x -> 4x -> 1x.
+	_speed = 1.0 if _speed >= 4.0 else _speed * 2.0
+	if _speed_btn != null:
+		_speed_btn.text = "SPEED %dx" % int(_speed)
+
+
+func _update_skip_label() -> void:
+	if _skip_btn != null:
+		_skip_btn.text = "SKIP" if _playing else "REPLAY"
+
+
+## REPLAY when finished: re-hide everything and play again.
+func _replay() -> void:
+	for e in _queue:
+		var node = e["node"]
+		if node != null and is_instance_valid(node):
+			node.visible = false
+			node.modulate.a = 0.0
+	_play_i = 0
+	_play_timer = 0.0
+	_playing = not _queue.is_empty()
+	_update_skip_label()
+
+
+## Per-event reveal delay (seconds at 1x), keyed off the event vocabulary.
+func _delay_for(ev) -> float:
+	if not (ev is Dictionary):
+		return 0.25
+	var e: String = str(ev.get("event", ""))
+	if e == "die":
+		if ev.get("crit", false):
+			return DELAY["die_crit"]
+		if ev.get("hit", false):
+			return DELAY["die_hit"]
+		return DELAY["die_miss"]
+	return float(DELAY.get(e, 0.25))
+
+
+## Lines worth a visual pop: crits and deaths (the dramatic beats).
+func _is_emphasis(ev) -> bool:
+	if not (ev is Dictionary):
+		return false
+	var e: String = str(ev.get("event", ""))
+	if e == "death":
+		return true
+	if e == "die" and ev.get("crit", false):
+		return true
+	return false
+
+
 func _on_close() -> void:
 	visible = false
+	_playing = false
 	closed.emit()

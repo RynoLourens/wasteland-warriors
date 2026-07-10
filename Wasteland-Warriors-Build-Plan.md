@@ -261,7 +261,17 @@ This is the hardest, highest-risk module. Build it as a strict pipeline, not an 
 
 **Section F is done when:** a full 3-player-rules game (you + AI seats by default, or a second human via the toggle) plays start to finish **on a phone in landscape** and on PC, with no rules gaps and no illegal moves possible.
 
-### Section G — Art, animation & juice
+### Section G — Art, animation & juice ✅ COMPLETE (2026-06-20)
+
+> Built: 82 real-art PNGs imported + wired via the new **ArtRegistry** autoload (greybox
+> fallback for the 4 missing assets — Razor, Lil' Minerva, ancient_artifact, falling_debris);
+> tweens on moves/flips/control/card-deals; **combat playback queue** (one event at a time,
+> crit/death pops, SPEED/SKIP/REPLAY) + **Guardian step-movement playback**; a project-wide
+> **Theme** (ui/game_theme.tres); an **InfoPanel** surfacing bag odds / deck / Old Tech;
+> an **AudioManager** autoload (audio-ready, no-op until files added) + handheld haptics; and
+> the accessibility floor (owner initials, shape-coded tokens — color is never the only cue).
+> Record: SECTION-G-graphics-record.md. UI test steps: Section H of UI-TEST-CHECKLIST.md.
+> Tests added: test_art_registry.gd, test_combat_playback.gd. Awaiting Corin's local GUT run.
 
 **Goal:** Make it feel like a game, not a spreadsheet — against a layout that already works.
 
