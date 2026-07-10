@@ -1,12 +1,12 @@
-[gd_resource type="Theme" load_steps=4 format=3 uid="uid://wwgametheme01a"]
+[gd_resource type="Theme" load_steps=6 format=3 uid="uid://wwgametheme01a"]
 
 [sub_resource type="StyleBoxFlat" id="SB_Button"]
-bg_color = Color(0.18, 0.2, 0.26, 1)
+bg_color = Color(0.145, 0.15, 0.175, 1)
 border_width_left = 1
 border_width_top = 1
 border_width_right = 1
 border_width_bottom = 1
-border_color = Color(0.36, 0.4, 0.5, 1)
+border_color = Color(0.62, 0.44, 0.22, 1)
 corner_radius_top_left = 8
 corner_radius_top_right = 8
 corner_radius_bottom_right = 8
@@ -17,12 +17,12 @@ content_margin_right = 14.0
 content_margin_bottom = 8.0
 
 [sub_resource type="StyleBoxFlat" id="SB_ButtonHover"]
-bg_color = Color(0.24, 0.27, 0.35, 1)
+bg_color = Color(0.19, 0.2, 0.23, 1)
 border_width_left = 1
 border_width_top = 1
 border_width_right = 1
 border_width_bottom = 1
-border_color = Color(0.5, 0.56, 0.68, 1)
+border_color = Color(0.78, 0.55, 0.28, 1)
 corner_radius_top_left = 8
 corner_radius_top_right = 8
 corner_radius_bottom_right = 8
@@ -33,7 +33,12 @@ content_margin_right = 14.0
 content_margin_bottom = 8.0
 
 [sub_resource type="StyleBoxFlat" id="SB_ButtonPressed"]
-bg_color = Color(0.3, 0.34, 0.44, 1)
+bg_color = Color(0.24, 0.2, 0.16, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.62, 0.44, 0.22, 1)
 corner_radius_top_left = 8
 corner_radius_top_right = 8
 corner_radius_bottom_right = 8
@@ -43,13 +48,49 @@ content_margin_top = 8.0
 content_margin_right = 14.0
 content_margin_bottom = 8.0
 
+[sub_resource type="StyleBoxFlat" id="SB_ButtonDisabled"]
+bg_color = Color(0.13, 0.135, 0.15, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.3, 0.28, 0.26, 1)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+content_margin_left = 14.0
+content_margin_top = 8.0
+content_margin_right = 14.0
+content_margin_bottom = 8.0
+
+[sub_resource type="StyleBoxFlat" id="SB_Panel"]
+bg_color = Color(0.1, 0.105, 0.13, 0.97)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.32, 0.27, 0.22, 1)
+corner_radius_top_left = 10
+corner_radius_top_right = 10
+corner_radius_bottom_right = 10
+corner_radius_bottom_left = 10
+content_margin_left = 10.0
+content_margin_top = 8.0
+content_margin_right = 10.0
+content_margin_bottom = 8.0
+
 [resource]
 default_font_size = 16
 Button/colors/font_color = Color(0.92, 0.94, 0.98, 1)
 Button/colors/font_hover_color = Color(1, 1, 1, 1)
+Button/colors/font_disabled_color = Color(0.6, 0.6, 0.62, 1)
 Button/font_sizes/font_size = 18
-Button/styles/normal = SubResource("SB_Button")
+Button/styles/disabled = SubResource("SB_ButtonDisabled")
 Button/styles/hover = SubResource("SB_ButtonHover")
+Button/styles/normal = SubResource("SB_Button")
 Button/styles/pressed = SubResource("SB_ButtonPressed")
 Label/colors/font_color = Color(0.9, 0.92, 0.96, 1)
 Label/font_sizes/font_size = 16
+Panel/styles/panel = SubResource("SB_Panel")
+PanelContainer/styles/panel = SubResource("SB_Panel")

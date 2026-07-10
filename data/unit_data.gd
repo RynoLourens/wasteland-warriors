@@ -30,5 +30,5 @@ class_name UnitData
 ## its space, BEFORE the regular simultaneous round. 0 = no sticky bomb.
 @export var sticky_bomb_dice: int = 2
 ## Grants the "controlled ground" +1 Defense aura WITHOUT a Control token
-## (Shield Drone). Capped: never stacks with the Control-token +1.
+## (Shield Drone). STACKS with the Control-token +1 (controlled + drone = +2).
 @export var grants_ground_defense: bool = false   ## Shield Drone.

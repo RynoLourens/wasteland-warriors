@@ -12,9 +12,9 @@ extends Control
 
 const SEAT_COLORS: Array = [&"green", &"blue", &"red"]
 const COLOR_SWATCH := {
-	&"green": Color(0.35, 0.78, 0.40),
-	&"blue": Color(0.35, 0.55, 0.92),
-	&"red": Color(0.90, 0.40, 0.40),
+	&"green": Color(0.87, 0.55, 0.18),   # rust amber   (matches board PLAYER_COLORS)
+	&"blue": Color(0.30, 0.65, 0.82),    # steel cyan
+	&"red": Color(0.78, 0.22, 0.28),     # blood crimson
 }
 const BOARD_SCENE := "res://scenes/BoardView.tscn"
 
@@ -29,9 +29,10 @@ func _ready() -> void:
 
 
 func _build_ui() -> void:
-	# Full-rect dark backdrop.
-	var bg := ColorRect.new()
-	bg.color = Color(0.10, 0.11, 0.14)
+	# WP3: wasteland gradient backdrop (the exact BoardView look, shared helper).
+	var bg := TextureRect.new()
+	bg.texture = BoardView._backdrop_tex()
+	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
 
@@ -60,6 +61,27 @@ func _build_ui() -> void:
 	sub.add_theme_font_size_override("font_size", 18)
 	sub.modulate = Color(1, 1, 1, 0.7)
 	col.add_child(sub)
+
+	# WP3: leader banner strip — pure visual flavour until WP5 adds the real
+	# leader select. Skips leaders whose art isn't imported (greybox-safe).
+	var strip := HBoxContainer.new()
+	strip.alignment = BoxContainer.ALIGNMENT_CENTER
+	strip.add_theme_constant_override("separation", 14)
+	strip.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	for lid in [&"general_stormfoot", &"lady_seraph", &"siyana_the_shield", &"the_rats_eye", &"lil_minerva"]:
+		var t: Texture2D = ArtRegistry.leader(lid)
+		if t == null:
+			continue
+		var card := TextureRect.new()
+		card.texture = t
+		card.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		card.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		card.custom_minimum_size = Vector2(96, 96)
+		strip.add_child(card)
+	if strip.get_child_count() > 0:
+		col.add_child(strip)
+	else:
+		strip.free()
 
 	# One big toggle row per seat.
 	for i in range(SEAT_COLORS.size()):

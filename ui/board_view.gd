@@ -89,6 +89,14 @@ var _active_human: StringName = &""        # the human whose intent we're collec
 var _my_action_turn: bool = false          # true while the active human owes an ACTION intent
 var _last_illegal_reason: String = ""      # reason from the last rejected move (re-prompt)
 
+# WP2: long-press tap-to-inspect (touch-first; desktop keeps hover tooltips)
+# and the staged-glow halo texture cache.
+const _LONG_PRESS_SEC := 0.45
+var _inspect_sheet = null              # InspectSheet (preload, no class_name)
+var _lmb_press_ms: int = 0
+var _long_press_fired: bool = false
+var _halo_tex: GradientTexture2D = null
+
 @onready var _hex_root: Node2D = $HexRoot
 @onready var _overlay_root: Node2D = $OverlayRoot
 @onready var _hilite_root: Node2D = $HiliteRoot
@@ -136,6 +144,21 @@ func _ready() -> void:
 	# Section G.4: hidden-info panel (bag odds, deck/hand, Old Tech per player).
 	_info_panel = InfoPanel.new()
 	add_child(_info_panel)
+
+	# WP2: tap-to-inspect bottom sheet (CanvasLayer 25, above everything).
+	_inspect_sheet = preload("res://ui/inspect_sheet.gd").new()
+	add_child(_inspect_sheet)
+
+	# WP3: full-screen wasteland backdrop on its own layer, BEHIND the board.
+	var bg_layer := CanvasLayer.new()
+	bg_layer.layer = -10
+	add_child(bg_layer)
+	var bg := TextureRect.new()
+	bg.texture = _backdrop_tex()
+	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bg_layer.add_child(bg)
 
 	# Fix H: provide the per-round combat-card window to the controller.
 	if _controller_match_active():
@@ -236,6 +259,15 @@ func _build_board_nodes() -> void:
 		poly.position = pos
 		_hex_root.add_child(poly)
 		_hex_nodes[coord.key()] = poly
+
+		# WP3: soft drop shadow under the tile. As a CHILD of the poly it inherits
+		# the reveal pop + visibility; z_index -1 renders it below every tile.
+		var shadow := Polygon2D.new()
+		shadow.polygon = corners
+		shadow.color = Color(0, 0, 0, 0.35)
+		shadow.position = Vector2(3, 4)
+		shadow.z_index = -1
+		poly.add_child(shadow)
 
 		# Real tile art on top of the greybox poly. WP1: the face + rotation are
 		# chosen to MATCH the cell's real exits (TileArtMatcher), residual
@@ -1033,11 +1065,24 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 			flat.append({"unit": unit, "owner": owner, "col": col})
 	var rect_list: Array = []
 	var total: int = flat.size()
-	for slot in range(total):
+	# WP2: 7+ units -> draw the first 5 plus a "+N" overflow badge (6 slots).
+	var shown: int = total
+	if total > 6:
+		shown = 5
+	var slots: int = shown + (1 if total > 6 else 0)
+	for slot in range(shown):
 		var e = flat[slot]
 		var staged := _is_unit_staged(coord, e["unit"])
-		var r := _add_unit_rect(ov, e["col"], _unit_label(e["unit"]), slot, total, staged, _unit_art(e["unit"], e["owner"]), str(e["owner"]).substr(0, 1).to_upper())
+		var dmg: int = int(e["unit"].get("damage", 0)) if e["unit"] is Dictionary else 0
+		var r := _add_unit_rect(ov, e["col"], _unit_label(e["unit"]), slot, slots, staged, _unit_art(e["unit"], e["owner"]), str(e["owner"]).substr(0, 1).to_upper(), dmg)
 		rect_list.append({"unit": e["unit"], "owner": e["owner"], "rect": r})
+	if total > 6:
+		# The badge occupies the last slot; hidden units share its hit-rect so a
+		# tap (deselect / inspect) still resolves to SOMETHING sensible.
+		var br := _add_unit_rect(ov, Color(0.22, 0.23, 0.27), "+%d" % (total - shown), shown, slots, false)
+		for hidden in range(shown, total):
+			var he = flat[hidden]
+			rect_list.append({"unit": he["unit"], "owner": he["owner"], "rect": br})
 	_unit_rects[coord.key()] = rect_list
 
 	# Count badge: how many units here are staged to move into the activated space.
@@ -1060,15 +1105,15 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 			otspr.texture = ot_tex
 			otspr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 			otspr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-			otspr.size = Vector2(20, 20)
-			otspr.position = Vector2(-26, -HEX_H * 0.5 + 4)
+			otspr.size = Vector2(30, 30)
+			otspr.position = Vector2(-34, -HEX_H * 0.5 + 2)
 			otspr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			ov.add_child(otspr)
 			var otc := Label.new()
 			otc.text = "×%d" % cell.old_tech
 			otc.add_theme_font_size_override("font_size", 13)
 			otc.modulate = Color(0.98, 0.88, 0.45)
-			otc.position = Vector2(-4, -HEX_H * 0.5 + 5)
+			otc.position = Vector2(-2, -HEX_H * 0.5 + 9)
 			ov.add_child(otc)
 		else:
 			var ot := Label.new()
@@ -1118,9 +1163,9 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 			sb.bg_color = _token_kind_color(kind, data)
 			sb.bg_color.a = 0.85
 			chip.modulate = Color(1, 1, 1, 0.95)
-		var chip_pos := Vector2(-HEX_SIZE * 0.5 + 4, HEX_H * 0.5 - 20 - tok_i * 16)
+		var chip_pos := Vector2(-HEX_SIZE * 0.5 + 2, HEX_H * 0.5 - 34 - tok_i * 36)
 		if tok_art != null:
-			var ts := 22.0
+			var ts := 30.0
 			var tspr := TextureRect.new()
 			tspr.texture = tok_art
 			tspr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -1129,6 +1174,17 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 			tspr.position = chip_pos
 			tspr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			ov.add_child(tspr)
+			# WP3: face-up tokens keep a short-name caption under the art.
+			if face_up:
+				var cap := Label.new()
+				cap.text = _token_short_name(data)
+				cap.add_theme_font_size_override("font_size", 11)
+				cap.add_theme_color_override("font_color", _token_kind_color(kind, data))
+				cap.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+				cap.add_theme_constant_override("outline_size", 3)
+				cap.position = chip_pos + Vector2(-4.0, ts - 1.0)
+				cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+				ov.add_child(cap)
 		else:
 			chip.add_theme_stylebox_override("normal", sb)
 			chip.position = chip_pos
@@ -1139,7 +1195,7 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 			"data": t.get("data"),
 			"face_up": t.get("face_up", false),
 			"kind": kind,
-			"rect": Rect2(chip_pos, Vector2(76, 18)),
+			"rect": Rect2(chip_pos, Vector2(76, 32)),
 		})
 		tok_i += 1
 
@@ -1207,10 +1263,11 @@ func _token_short_name(data) -> String:
 
 
 ## Draws one unit token (centred grid). Returns its Rect2 (overlay-local) for
-## click hit-testing. `slot` is the unit's index, `total` the count in the cell.
-func _add_unit_rect(ov: Node2D, col: Color, label_text: String, slot: int, total: int, staged: bool, art: Texture2D = null, owner_initial: String = "") -> Rect2:
-	var w := 26.0
-	var h := 18.0
+## click hit-testing. `slot` is the unit's index, `total` the number of SLOTS
+## drawn in this cell (a "+N" overflow badge counts as one slot). WP2: square
+## tokens sized by stack count, owner-colour border, damage pips, staged glow.
+func _add_unit_rect(ov: Node2D, col: Color, label_text: String, slot: int, total: int, staged: bool, art: Texture2D = null, owner_initial: String = "", damage: int = 0) -> Rect2:
+	var s: float = _token_size_for(total)
 	var gap := 3.0
 	var per_row := 3
 	var rows: int = int(ceil(float(total) / float(per_row)))
@@ -1222,27 +1279,44 @@ func _add_unit_rect(ov: Node2D, col: Color, label_text: String, slot: int, total
 		in_this_row = rem if rem != 0 else per_row
 	var col_in_row: int = slot % per_row
 	# Centre the row horizontally and the rows block vertically around (0,0).
-	var row_w := float(in_this_row) * w + float(in_this_row - 1) * gap
-	var cx := -row_w * 0.5 + float(col_in_row) * (w + gap)
-	var block_h := float(rows) * h + float(rows - 1) * gap
-	var cy := -block_h * 0.5 + float(row) * (h + gap)
+	var row_w := float(in_this_row) * s + float(in_this_row - 1) * gap
+	var block_h := float(rows) * s + float(rows - 1) * gap
+	# Staged tokens pop: drawn 12% larger around the same centre.
+	var draw_s: float = s * (1.12 if staged else 1.0)
+	var cx := -row_w * 0.5 + float(col_in_row) * (s + gap) - (draw_s - s) * 0.5
+	var cy := -block_h * 0.5 + float(row) * (s + gap) - (draw_s - s) * 0.5
 	var pos := Vector2(cx, cy)
 
-	# Owner-colour backing plate. With art it becomes a thin coloured border so
-	# ownership still reads (accessibility: never the sprite alone); greybox = token.
+	# Staged glow: a soft pulsing halo UNDER the token (replaces the old outline).
+	if staged:
+		var hs: float = draw_s + 16.0
+		var halo := TextureRect.new()
+		halo.texture = _staged_halo_tex()
+		halo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		halo.size = Vector2(hs, hs)
+		halo.position = pos + Vector2((draw_s - hs) * 0.5, (draw_s - hs) * 0.5)
+		halo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		ov.add_child(halo)
+		var tw := halo.create_tween()
+		tw.set_loops()
+		tw.tween_property(halo, "modulate:a", 0.45, 0.5)
+		tw.tween_property(halo, "modulate:a", 1.0, 0.5)
+
+	# Owner-colour border: the plate shows as a ~2.5 px frame around the art.
 	var rect := ColorRect.new()
 	rect.color = col
-	rect.size = Vector2(w, h)
+	rect.size = Vector2(draw_s, draw_s)
 	rect.position = pos
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	ov.add_child(rect)
 
 	if art != null:
-		var pad := 2.0
+		var pad := 2.5
 		var tr := TextureRect.new()
 		tr.texture = art
 		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		tr.size = Vector2(w - pad * 2.0, h - pad * 2.0)
+		tr.size = Vector2(draw_s - pad * 2.0, draw_s - pad * 2.0)
 		tr.position = pos + Vector2(pad, pad)
 		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		ov.add_child(tr)
@@ -1251,36 +1325,80 @@ func _add_unit_rect(ov: Node2D, col: Color, label_text: String, slot: int, total
 		if owner_initial != "":
 			var oi := Label.new()
 			oi.text = owner_initial
-			oi.add_theme_font_size_override("font_size", 9)
+			oi.add_theme_font_size_override("font_size", 10)
 			oi.add_theme_color_override("font_color", Color(1, 1, 1, 0.95))
 			oi.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
 			oi.add_theme_constant_override("outline_size", 3)
-			oi.position = pos + Vector2(-1, -3)
+			oi.position = pos + Vector2(-1, -4)
 			oi.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			ov.add_child(oi)
 
-	# Bright outline when this unit is staged to move.
-	if staged:
-		var outline := Line2D.new()
-		outline.width = 2.5
-		outline.default_color = COL_STAGED
-		outline.closed = true
-		outline.add_point(pos)
-		outline.add_point(pos + Vector2(w, 0))
-		outline.add_point(pos + Vector2(w, h))
-		outline.add_point(pos + Vector2(0, h))
-		ov.add_child(outline)
+	# Damage pips: red dots along the token's bottom edge (guardians included).
+	if damage > 0:
+		var pip_n: int = int(min(damage, 6))
+		var pw := 4.0
+		var pips_w := float(pip_n) * pw + float(pip_n - 1) * 2.0
+		for i in range(pip_n):
+			var pip := ColorRect.new()
+			pip.color = Color(0.95, 0.16, 0.16)
+			pip.size = Vector2(pw, pw)
+			pip.position = pos + Vector2((draw_s - pips_w) * 0.5 + float(i) * (pw + 2.0), draw_s - pw - 2.5)
+			pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			ov.add_child(pip)
 
-	# Greybox text label only when there's no art to show.
+	# Greybox / "+N" badge label when there's no art to show.
 	if art == null:
 		var lbl := Label.new()
 		lbl.text = label_text
-		lbl.add_theme_font_size_override("font_size", 10)
-		lbl.modulate = Color(0, 0, 0, 0.9)
-		lbl.position = pos + Vector2(2, 1)
+		lbl.add_theme_font_size_override("font_size", 12)
+		lbl.modulate = Color(1, 1, 1, 0.95) if col.get_luminance() < 0.45 else Color(0, 0, 0, 0.9)
+		lbl.position = pos + Vector2(3.0, draw_s * 0.5 - 10.0)
+		lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		ov.add_child(lbl)
 
-	return Rect2(pos, Vector2(w, h))
+	return Rect2(pos, Vector2(draw_s, draw_s))
+
+
+## WP2 token edge length: fewer units in a cell = bigger, more readable tokens.
+func _token_size_for(total: int) -> float:
+	if total <= 1:
+		return 48.0
+	if total <= 3:
+		return 40.0
+	return 30.0
+
+
+## Cached radial-gradient halo texture for staged tokens (gold, fading out).
+func _staged_halo_tex() -> GradientTexture2D:
+	if _halo_tex == null:
+		var g := Gradient.new()
+		g.set_color(0, Color(COL_STAGED.r, COL_STAGED.g, COL_STAGED.b, 0.85))
+		g.set_color(1, Color(COL_STAGED.r, COL_STAGED.g, COL_STAGED.b, 0.0))
+		var t := GradientTexture2D.new()
+		t.gradient = g
+		t.fill = GradientTexture2D.FILL_RADIAL
+		t.fill_from = Vector2(0.5, 0.5)
+		t.fill_to = Vector2(0.5, 0.0)
+		t.width = 64
+		t.height = 64
+		_halo_tex = t
+	return _halo_tex
+
+
+## WP3: radial wasteland backdrop (dark brown-black), generated in code — no
+## asset or editor import needed. Static so SetupScreen shares the exact look.
+static func _backdrop_tex() -> GradientTexture2D:
+	var g := Gradient.new()
+	g.set_color(0, Color(0.155, 0.120, 0.095))
+	g.set_color(1, Color(0.055, 0.045, 0.045))
+	var t := GradientTexture2D.new()
+	t.gradient = g
+	t.fill = GradientTexture2D.FILL_RADIAL
+	t.fill_from = Vector2(0.5, 0.42)
+	t.fill_to = Vector2(0.5, 1.05)
+	t.width = 512
+	t.height = 512
+	return t
 
 
 ## Texture for a unit/guardian, or null (greybox fallback). Cell units are dicts
@@ -1297,24 +1415,51 @@ func _unit_art(unit, owner = &"") -> Texture2D:
 
 
 func _draw_token_markers(ov: Node2D, cell: HexCell) -> void:
+	# WP3: real Activation-token art (front = ACTIVE, back = CONTROL) tinted to
+	# the owner, with a shaped outline (triangle vs diamond) as the colour-blind
+	# cue. No art -> the old greybox filled shape still renders.
 	var i := 0
 	for owner in cell.token_state.keys():
 		var st: int = cell.get_token_state(owner)
 		if st == HexCell.TokenState.NONE:
 			continue
-		var marker := Polygon2D.new()
 		var col: Color = PLAYER_COLORS.get(owner, Color.WHITE)
-		# Diamond = control (face-down), filled triangle = activation (face-up).
-		if st == HexCell.TokenState.ACTIVE:
-			marker.color = col
-			marker.polygon = PackedVector2Array([
-				Vector2(0, -7), Vector2(7, 6), Vector2(-7, 6)])
+		var mpos := Vector2(-HEX_SIZE * 0.55 + float(i) * 17.0, -HEX_H * 0.5 + 15.0)
+		var tex: Texture2D = ArtRegistry.misc(&"activation_front") if st == HexCell.TokenState.ACTIVE else ArtRegistry.misc(&"activation_back")
+		if tex != null:
+			var ms := 26.0
+			var spr := TextureRect.new()
+			spr.texture = tex
+			spr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			spr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			spr.size = Vector2(ms, ms)
+			spr.position = mpos - Vector2(ms, ms) * 0.5
+			spr.self_modulate = col if st == HexCell.TokenState.ACTIVE else Color(col.r, col.g, col.b, 0.75)
+			spr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			ov.add_child(spr)
+			var outline := Line2D.new()
+			outline.closed = true
+			outline.width = 1.5
+			outline.default_color = Color(1, 1, 1, 0.85)
+			if st == HexCell.TokenState.ACTIVE:
+				for pnt in [Vector2(0, -8), Vector2(8, 7), Vector2(-8, 7)]:
+					outline.add_point(mpos + pnt)
+			else:
+				for pnt in [Vector2(0, -8), Vector2(8, 0), Vector2(0, 8), Vector2(-8, 0)]:
+					outline.add_point(mpos + pnt)
+			ov.add_child(outline)
 		else:
-			marker.color = Color(col.r, col.g, col.b, 0.5)
-			marker.polygon = PackedVector2Array([
-				Vector2(0, -6), Vector2(6, 0), Vector2(0, 6), Vector2(-6, 0)])
-		marker.position = Vector2(-HEX_SIZE * 0.55 + float(i) * 10.0, -HEX_H * 0.5 + 14)
-		ov.add_child(marker)
+			var marker := Polygon2D.new()
+			if st == HexCell.TokenState.ACTIVE:
+				marker.color = col
+				marker.polygon = PackedVector2Array([
+					Vector2(0, -7), Vector2(7, 6), Vector2(-7, 6)])
+			else:
+				marker.color = Color(col.r, col.g, col.b, 0.5)
+				marker.polygon = PackedVector2Array([
+					Vector2(0, -6), Vector2(6, 0), Vector2(0, 6), Vector2(-6, 0)])
+			marker.position = mpos
+			ov.add_child(marker)
 		i += 1
 
 
@@ -1336,6 +1481,11 @@ func _unit_label(unit) -> String:
 func _process(delta: float) -> void:
 	if _revealing:
 		return
+	# WP2: long-press inspect — fires while the finger/button is still down.
+	if _lmb_down and not _lmb_dragged and not _long_press_fired \
+			and Time.get_ticks_msec() - _lmb_press_ms >= int(_LONG_PRESS_SEC * 1000.0):
+		_long_press_fired = true
+		_open_inspect_at(_lmb_start)
 	var dir := Vector2.ZERO
 	if Input.is_key_pressed(KEY_LEFT) or Input.is_key_pressed(KEY_A):
 		dir.x += 1.0
@@ -1356,6 +1506,9 @@ func _input(event: InputEvent) -> void:
 	if not (event is InputEventMouseMotion):
 		return
 	if _hud == null or _revealing:
+		return
+	if _inspect_sheet != null and _inspect_sheet.is_open():
+		_hud.hide_tooltip()
 		return
 	var gp := get_global_mouse_position()
 	var coord: HexCoord = _pixel_to_hex(gp)
@@ -1425,16 +1578,74 @@ func _unit_tooltip_text(coord: HexCoord, unit) -> String:
 		% [name_s, mv, atk, eff_def, hp, eff_def]
 
 
-## Effective Defense of a unit here = base + controlled-ground/drone (+1, capped) +
-## stacking round buffs (Defensive Stance), mirroring the combat resolver's rule.
+## Effective Defense of a unit here = base + controlled-ground (+1) + Shield
+## Drone(s) (+1 each, whole space) + stacking round buffs (Defensive Stance).
+## Controlled ground and drones DO STACK (+2) — mirrors ActionResolver's
+## _prune_dead / the CombatResolver ground-defense rule exactly.
 func _effective_defense_for(coord: HexCoord, unit) -> int:
+	var p: Dictionary = _defense_parts_for(coord, unit)
+	return int(p["base"]) + int(p["control"]) + int(p["drones"]) + int(p["buffs"])
+
+
+## Defense breakdown {base, control, drones, buffs} — shared by the hover
+## tooltip, the WP2 inspect sheet and _effective_defense_for so they agree.
+func _defense_parts_for(coord: HexCoord, unit) -> Dictionary:
+	var parts := {"base": 1, "control": 0, "drones": 0, "buffs": 0}
 	var data = unit.get("data") if unit is Dictionary else unit
 	if data == null:
-		return 1
-	var base_def: int = int(data.defense) if "defense" in data else 1
-	var bonus := 0
+		return parts
+	parts["base"] = int(data.defense) if "defense" in data else 1
 	var cell: HexCell = GameState.get_cell(coord)
+	if cell == null:
+		return parts
 	# Owner of this unit (search the cell's owners for the one holding this dict).
+	var owner := &""
+	for o in cell.units.keys():
+		for u in cell.units[o]:
+			if is_same(u, unit):
+				owner = o
+				break
+	# +1 per Shield Drone present in the space — drones shield EVERYONE here and
+	# they STACK with the Control-token +1 (mirrors ActionResolver._prune_dead).
+	for o in cell.units.keys():
+		for u in cell.units[o]:
+			var d = u.get("data") if u is Dictionary else u
+			if d != null and d is Resource and d.get("grants_ground_defense"):
+				parts["drones"] = int(parts["drones"]) + 1
+	if owner != &"" and cell.get_token_state(owner) == HexCell.TokenState.CONTROL:
+		parts["control"] = 1
+	if owner != &"" and GameState.has_method("extra_defense_for"):
+		parts["buffs"] = int(GameState.extra_defense_for(owner))
+	return parts
+
+
+## WP2: long-press opens the inspect sheet for whatever is under the press
+## point — a unit token, an env/func token chip, or the tile itself.
+func _open_inspect_at(screen_pos: Vector2) -> void:
+	if _inspect_sheet == null or _revealing:
+		return
+	var coord: HexCoord = _pixel_to_hex(screen_pos)
+	if coord == null:
+		return
+	var cell: HexCell = GameState.get_cell(coord)
+	if cell == null:
+		return
+	var unit = _unit_at_point(coord, screen_pos)
+	if unit != null:
+		_inspect_sheet.open(_inspect_info_for_unit(coord, unit))
+		return
+	var tok = _token_at_point(coord, screen_pos)
+	if tok != null:
+		_inspect_sheet.open(_inspect_info_for_token(tok))
+		return
+	_inspect_sheet.open(_inspect_info_for_tile(coord, cell))
+
+
+## Inspect-sheet payload for a unit dict {data, damage} (or bare guardian).
+func _inspect_info_for_unit(coord: HexCoord, unit) -> Dictionary:
+	var data = unit.get("data") if unit is Dictionary else unit
+	var dmg: int = int(unit.get("damage", 0)) if unit is Dictionary else 0
+	var cell: HexCell = GameState.get_cell(coord)
 	var owner := &""
 	if cell != null:
 		for o in cell.units.keys():
@@ -1442,13 +1653,81 @@ func _effective_defense_for(coord: HexCoord, unit) -> int:
 				if is_same(u, unit):
 					owner = o
 					break
-	# Controlled-ground +1 (the resolver caps drones+control at +1 ground bonus).
-	if owner != &"" and cell != null and cell.get_token_state(owner) == HexCell.TokenState.CONTROL:
-		bonus += 1
-	# Stacking round buff (Defensive Stance).
-	if owner != &"" and GameState.has_method("extra_defense_for"):
-		bonus += GameState.extra_defense_for(owner)
-	return base_def + bonus
+	var title := "Unit"
+	if data != null and "display_name" in data and str(data.display_name) != "":
+		title = str(data.display_name)
+	var mv: int = int(data.move) if data != null and "move" in data else 1
+	var atk: int = int(data.attack) if data != null and "attack" in data else 1
+	var rng: int = int(data.range) if data != null and "range" in data else 0
+	var p: Dictionary = _defense_parts_for(coord, unit)
+	var eff: int = int(p["base"]) + int(p["control"]) + int(p["drones"]) + int(p["buffs"])
+	var lines: Array = []
+	var stat_line := "Move %d   Attack %d   Defense %d" % [mv, atk, eff]
+	if rng > 0:
+		stat_line += "   Range %d" % rng
+	lines.append(stat_line)
+	var breakdown := "Defense: %d base" % int(p["base"])
+	if int(p["control"]) > 0:
+		breakdown += "  +1 controlled ground"
+	if int(p["drones"]) > 0:
+		breakdown += "  +%d Shield Drone" % int(p["drones"])
+	if int(p["buffs"]) > 0:
+		breakdown += "  +%d round buff" % int(p["buffs"])
+	lines.append(breakdown)
+	var hp: int = int(max(eff - dmg, 0))
+	lines.append("Damage %d — Health %d/%d" % [dmg, hp, eff])
+	if owner != &"":
+		lines.append("Owner: %s" % str(owner).capitalize())
+	if data != null and "passive_text" in data and str(data.passive_text) != "":
+		lines.append(str(data.passive_text))
+	elif data != null and "text" in data and str(data.text) != "":
+		lines.append(str(data.text))
+	return {"texture": _unit_art(unit, owner), "title": title, "lines": lines}
+
+
+## Inspect-sheet payload for an env/func token chip entry {data, face_up, kind}.
+func _inspect_info_for_token(tok: Dictionary) -> Dictionary:
+	var data = tok.get("data")
+	var kind: String = tok.get("kind", "")
+	var label := "Function token" if kind == "func" else "Environment token"
+	if not tok.get("face_up", false):
+		return {
+			"texture": _token_back_art(kind, data),
+			"title": "Unexplored %s" % label.to_lower(),
+			"lines": ["Move a Unit here to reveal it."],
+		}
+	var title := label
+	if data != null and "display_name" in data and str(data.display_name) != "":
+		title = str(data.display_name)
+	var lines: Array = [label]
+	if data != null and "text" in data and str(data.text) != "":
+		lines.append(str(data.text))
+	return {"texture": _token_art(kind, data), "title": title, "lines": lines}
+
+
+## Inspect-sheet payload for the tile itself (type, exits, Old Tech, markers).
+func _inspect_info_for_tile(coord: HexCoord, cell: HexCell) -> Dictionary:
+	var kind := "Room"
+	if cell.tile_type == HexCell.TileType.CENTER:
+		kind = "Center"
+	elif cell.tile_type == HexCell.TileType.CORRIDOR:
+		kind = "Corridor"
+	var title := kind
+	if _is_rally(coord):
+		title += " — Rally Zone"
+	var lines: Array = []
+	lines.append("Exits: %d" % cell.open_exit_count())
+	if cell.old_tech > 0:
+		lines.append("Old Tech here: %d" % cell.old_tech)
+	for o in cell.token_state.keys():
+		var st: int = cell.get_token_state(o)
+		if st == HexCell.TokenState.ACTIVE:
+			lines.append("%s Activation token (face-up)" % str(o).capitalize())
+		elif st == HexCell.TokenState.CONTROL:
+			lines.append("%s CONTROLS this space (+1 Defense)" % str(o).capitalize())
+	if lines.size() <= 1:
+		lines.append("Nothing else of note here.")
+	return {"texture": null, "title": title, "lines": lines}
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -1480,6 +1759,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		_lmb_dragged = false
 		_pan_last = event.position
 		_lmb_start = event.position
+		_lmb_press_ms = Time.get_ticks_msec()
+		_long_press_fired = false
 		# fall through: actual click handled on RELEASE (so a drag doesn't also click)
 		return
 
@@ -1505,6 +1786,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		_lmb_dragged = false
 		if was_drag:
 			return   # it was a pan, not a click
+		if _long_press_fired:
+			_long_press_fired = false
+			return   # the long-press already opened the inspect sheet
 		# Map-peek: while viewing the board during Recruitment, ANY click (that isn't a
 		# pan) ends the peek and restores the recruitment panel. The board state is
 		# unchanged — this is a look-only mode.

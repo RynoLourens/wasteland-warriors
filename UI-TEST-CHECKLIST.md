@@ -203,6 +203,32 @@ crashes. Rename back.
 
 ---
 
+## Section J — WP2 readable tokens + tap-to-inspect (2026-07-10)
+
+- [ ] J1. A lone unit on a tile renders ~48 px (clearly readable); 2–3 units ~40 px; 4+ ~30 px in a 3-wide grid.
+- [ ] J2. A cell with 7+ units shows 5 tokens + a grey "+N" badge with the correct count.
+- [ ] J3. Every token has a thin owner-colour border (amber/cyan/crimson) AND the owner initial — check a mixed-owner cell.
+- [ ] J4. Damage a unit in combat, survive: red pips appear along the token's bottom edge (guardians too).
+- [ ] J5. Stage a unit to move: it pops ~12% larger with a pulsing gold halo (no more rectangle outline); the "N→" count badge still shows.
+- [ ] J6. Long-press (~half a second) a unit: bottom sheet slides up with 200 px art, name, M/A/D (+Range if ranged), a Defense breakdown line, Damage/Health, owner.
+- [ ] J7. Defense breakdown is TRUE: on controlled ground with a Shield Drone present it reads base +1 controlled ground +1 Shield Drone (they stack, +2 total).
+- [ ] J8. Long-press an env/func token chip: face-down says "Unexplored…"; face-up shows name + full rules text.
+- [ ] J9. Long-press empty tile: shows tile type (Room/Corridor/Center, Rally Zone), exit count, Old Tech, control markers.
+- [ ] J10. Sheet closes on: tap outside, swipe-down on the sheet, ✕ button. Board doesn't ALSO take the tap as a click (no accidental activation under the sheet, and no click fires after releasing a long-press).
+- [ ] J11. Desktop hover tooltips still work and hide while the sheet is open. Pan/zoom/drag still work; a drag never opens the sheet.
+- [ ] J12. Old Tech icon now 30 px and clearly visible at default zoom.
+
+## Section K — WP3 markers, chips, atmosphere, theme (2026-07-10)
+
+- [ ] K1. Activation markers now use the real token art (front = face-up ACTIVE, back = CONTROL), tinted the owner's colour, ~26 px, with a white triangle (active) / diamond (control) outline as the colour-blind cue.
+- [ ] K2. Control markers read slightly translucent vs activation markers; three players' markers on one tile don't overlap illegibly.
+- [ ] K3. Env/func token chips are 30 px; face-up chips show the art PLUS an outlined 11 px name caption beneath; face-down still shows the back art.
+- [ ] K4. The board sits on a dark brown-black radial wasteland backdrop (no flat grey void); same backdrop on the setup screen.
+- [ ] K5. Every tile casts a soft drop shadow (down-right) — the board reads as physical tiles on a table. Shadows pop in WITH the tile during the spiral reveal (no orphan shadows before reveal).
+- [ ] K6. Buttons everywhere are dark steel with a rust border (hover = brighter rust); panels pick up the dark rounded style. Nothing became unreadable.
+- [ ] K7. Setup screen: seat swatches now match the on-board amber/cyan/crimson, and a leader-art banner strip sits under the title (4 leaders until Minerva's art lands in WP4).
+- [ ] K8. Overall screenshot test: a stranger glancing at the screen says "that's a game", not "that's a debug tool".
+
 ## How to report
 For any ✗, note: what you did, what you expected, what happened, and (if visible) any error in
 the Godot output console. Paste those back and I'll fix them.
