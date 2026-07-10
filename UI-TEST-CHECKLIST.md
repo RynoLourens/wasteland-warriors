@@ -174,6 +174,35 @@ fully playable **muted** (no audio files ship in v1; the AudioManager is wired f
 
 ---
 
+## Section I — WP1 exit-true tiles + player-colour tokens (2026-07-10)
+
+**I1 — Painted doorways tell the truth.** ☐
+On a fresh match, walk the whole board: every painted doorway leads to an edge a Unit can
+actually move through, and every walkable edge shows a doorway. (Patched edges should be
+invisible at arm's length — look for obvious seams and report the worst one.)
+
+**I2 — No greybox leftovers under art.** ☐
+No yellow exit bars, no white hex outlines, no darkened-poly tint under tiles. Rally zones show
+a soft **gold glow ring** instead of a green tint, and the ring doesn't hide the tile art.
+
+**I3 — Central Chamber.** ☐
+The centre tile renders unrotated; its six painted doorways match its real exits (closed edges
+are patched with rock).
+
+**I4 — Player colours (wasteland trio).** ☐
+P1 tokens = rust **amber**, P2 = steel **cyan**, P3 = blood **crimson** — the green/red source
+backgrounds never show for owned units. Basic units are lighter, Specials darker/richer of the
+same hue. Owner initials still show. Markers/badges/info-panel swatches use the same trio.
+
+**I5 — Moving ghosts keep their colour.** ☐
+A sliding move-ghost token uses the mover's palette art, not neutral green.
+
+**I6 — Greybox fallback still works.** ☐
+(Spot check) Rename `art/tiles` away and boot: greybox polys + yellow exit bars return, no
+crashes. Rename back.
+
+---
+
 ## How to report
 For any ✗, note: what you did, what you expected, what happened, and (if visible) any error in
 the Godot output console. Paste those back and I'll fix them.

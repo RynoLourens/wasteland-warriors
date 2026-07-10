@@ -29,11 +29,12 @@ const COL_HILITE := Color(0.30, 0.70, 0.95, 0.55)  # reachable tint
 const COL_SUPPORT := Color(0.96, 0.62, 0.16, 0.50) # eligible Ranged support-fire glow
 const COL_ACTIVATE := Color(0.95, 0.78, 0.25, 0.85)
 const COL_STAGED := Color(0.98, 0.85, 0.20)        # staged-to-move unit outline/badge
+const DEBUG_EXIT_BARS := false                     # re-enable yellow exit bars over art
 const TOKEN_HIT_PAD := 8.0                          # padding on unit-token click targets
 const PLAYER_COLORS := {
-	&"green": Color(0.35, 0.78, 0.40),
-	&"blue": Color(0.35, 0.55, 0.92),
-	&"red": Color(0.90, 0.40, 0.40),
+	&"green": Color(0.87, 0.55, 0.18),   # rust amber  (art palette: _amber)
+	&"blue": Color(0.30, 0.65, 0.82),    # steel cyan  (art palette: _cyan)
+	&"red": Color(0.78, 0.22, 0.28),     # blood crimson (art palette: _crimson)
 	&"guardian": Color(0.70, 0.45, 0.85),
 }
 
@@ -236,25 +237,15 @@ func _build_board_nodes() -> void:
 		_hex_root.add_child(poly)
 		_hex_nodes[coord.key()] = poly
 
-		# Real tile art on top of the greybox poly (Section G.1). A sprite covering
-		# the cell; the poly stays underneath so rally tints and the reachable /
-		# activate overlays (which modulate the poly) still read.
-		var tile_tex := _tile_art(coord, cell)
-		if tile_tex != null:
-			var spr := Sprite2D.new()
-			spr.texture = tile_tex
-			# Child of `poly` (already at `pos`), so its LOCAL position is zero —
-			# Sprite2D centres on its origin, which lines up with the hex centre.
-			spr.position = Vector2.ZERO
-			var tw: float = float(tile_tex.get_width())
-			if tw > 0.0:
-				var sc := (HEX_W * 1.02) / tw
-				spr.scale = Vector2(sc, sc)
-			poly.color = poly.color.darkened(0.15)
-			poly.add_child(spr)
+		# Real tile art on top of the greybox poly. WP1: the face + rotation are
+		# chosen to MATCH the cell's real exits (TileArtMatcher), residual
+		# mismatches get door/wall patch strips - painted doorways now tell the
+		# truth about where a Unit can move.
+		var art_present := _add_tile_art(poly, coord, cell)
 
-		# Edge outline + open-exit markers (so a tester can see connectivity).
-		_draw_cell_edges(poly, cell, corners)
+		# Edge outline + open-exit markers: greybox connectivity aid, suppressed
+		# under art where the painted doorways carry that signal.
+		_draw_cell_edges(poly, cell, corners, art_present)
 
 		# Per-cell overlay layer (units, tokens, old tech, coord label).
 		var ov := Node2D.new()
@@ -296,8 +287,11 @@ func _tile_color(coord: HexCoord, cell: HexCell) -> Color:
 			return COL_ROOM
 
 
-## Tile face texture for a coord (deterministic per hex), or null for greybox.
-func _tile_art(coord: HexCoord, cell: HexCell) -> Texture2D:
+## WP1 exit-true tile art: match a face + rotation to the cell's real exits,
+## then patch any residual mismatch (doorway over rock / rock over painted
+## door). Returns true when art was added, so callers suppress greybox aids.
+## The greybox fallback contract holds: no art -> false -> poly renders as before.
+func _add_tile_art(poly: Polygon2D, coord: HexCoord, cell: HexCell) -> bool:
 	var tt := "room"
 	match cell.tile_type:
 		HexCell.TileType.CENTER:
@@ -306,10 +300,83 @@ func _tile_art(coord: HexCoord, cell: HexCell) -> Texture2D:
 			tt = "corridor"
 		_:
 			tt = "room"
-	return ArtRegistry.tile(tt, coord.q, coord.r)
+	var pick: Dictionary = TileArtMatcher.pick(tt, _cell_exit_angles(cell), coord.q, coord.r)
+	var tile_tex: Texture2D = ArtRegistry.tile_face(pick["face"])
+	if tile_tex == null:
+		return false
+	var tw: float = float(tile_tex.get_width())
+	if tw <= 0.0:
+		return false
+	var sc := (HEX_W * 1.02) / tw
+	var spr := Sprite2D.new()
+	spr.texture = tile_tex
+	# Child of `poly` (already at the hex centre), so its LOCAL position is zero.
+	spr.position = Vector2.ZERO
+	spr.rotation = deg_to_rad(float(pick["rotation_deg"]))
+	spr.scale = Vector2(sc, sc)
+	poly.add_child(spr)
+	# Residual mismatches: overlay patch strips on the offending edges. The
+	# patches were cropped pointing outward at 90 deg with their centre 459
+	# source-px from the hex centre (see OPUS-BUILD-GUIDE WP1 step 3).
+	for a in pick["missing_doors"]:
+		_add_edge_patch(poly, "door", float(a), sc)
+	for a in pick["extra_doors"]:
+		_add_edge_patch(poly, "wall", float(a), sc)
+	# Under art the poly must not tint the tile; it stays (transparent) for
+	# click geometry and the greybox fallback.
+	poly.color = Color(0, 0, 0, 0)
+	# Rally zones: the whole-poly tint is invisible under opaque art, so mark
+	# them with a soft gold glow ring instead (player-agnostic, art readable).
+	if _is_rally(coord):
+		var ring := Line2D.new()
+		ring.closed = true
+		ring.width = HEX_SIZE * 0.10
+		ring.default_color = Color(0.95, 0.80, 0.30, 0.40)
+		ring.joint_mode = Line2D.LINE_JOINT_ROUND
+		for c in _hex_corners():
+			ring.add_point(c * 0.86)
+		poly.add_child(ring)
+	return true
 
 
-func _draw_cell_edges(poly: Polygon2D, cell: HexCell, corners: PackedVector2Array) -> void:
+## Pixel angles (deg, y-down) of a cell's open edges - the same angle model the
+## matcher uses (every axial neighbour offset lands on an edge midpoint).
+func _cell_exit_angles(cell: HexCell) -> Array:
+	var out: Array = []
+	for dir in range(6):
+		if not cell.has_exit(dir):
+			continue
+		var d: Vector2i = HexCoord.DIRECTIONS[dir]
+		out.append(fposmod(rad_to_deg(_hex_to_pixel(d.x, d.y).angle()), 360.0))
+	return out
+
+
+func _add_edge_patch(poly: Polygon2D, kind: String, angle_deg: float, sc: float) -> void:
+	var tex: Texture2D = ArtRegistry.tile_patch(kind)
+	if tex == null:
+		return
+	var patch := Sprite2D.new()
+	patch.texture = tex
+	patch.position = Vector2.from_angle(deg_to_rad(angle_deg)) * (459.0 * sc)
+	patch.rotation = deg_to_rad(angle_deg - 90.0)
+	patch.scale = Vector2(sc, sc)
+	poly.add_child(patch)
+
+
+func _is_rally(coord: HexCoord) -> bool:
+	for color in GameState.rally_zones.keys():
+		var rz: HexCoord = GameState.rally_zones[color]
+		if rz != null and rz.equals(coord):
+			return true
+	return false
+
+
+func _draw_cell_edges(poly: Polygon2D, cell: HexCell, corners: PackedVector2Array, art_present: bool = false) -> void:
+	# Under tile art the painted doorways ARE the connectivity signal (WP1), so
+	# the greybox outline + yellow bars only draw on the fallback path (or when
+	# DEBUG_EXIT_BARS is flipped on to audit the matcher).
+	if art_present and not DEBUG_EXIT_BARS:
+		return
 	# Outline.
 	var outline := Line2D.new()
 	outline.width = 2.0
@@ -969,7 +1036,7 @@ func _redraw_cell_overlay(coord: HexCoord) -> void:
 	for slot in range(total):
 		var e = flat[slot]
 		var staged := _is_unit_staged(coord, e["unit"])
-		var r := _add_unit_rect(ov, e["col"], _unit_label(e["unit"]), slot, total, staged, _unit_art(e["unit"]), str(e["owner"]).substr(0, 1).to_upper())
+		var r := _add_unit_rect(ov, e["col"], _unit_label(e["unit"]), slot, total, staged, _unit_art(e["unit"], e["owner"]), str(e["owner"]).substr(0, 1).to_upper())
 		rect_list.append({"unit": e["unit"], "owner": e["owner"], "rect": r})
 	_unit_rects[coord.key()] = rect_list
 
@@ -1218,12 +1285,12 @@ func _add_unit_rect(ov: Node2D, col: Color, label_text: String, slot: int, total
 
 ## Texture for a unit/guardian, or null (greybox fallback). Cell units are dicts
 ## {data: UnitData}; guardians may be bare resources.
-func _unit_art(unit) -> Texture2D:
+func _unit_art(unit, owner = &"") -> Texture2D:
 	var data = unit.get("data") if unit is Dictionary else unit
 	if data == null or not (data is Resource) or not ("id" in data):
 		return null
 	var uid = data.id
-	var t: Texture2D = ArtRegistry.unit(uid)
+	var t: Texture2D = ArtRegistry.unit_owned(uid, owner)
 	if t == null:
 		t = ArtRegistry.guardian(uid)
 	return t
@@ -2179,7 +2246,8 @@ func _on_unit_moved(unit, from_coord, to_coord) -> void:
 			_redraw_cell_overlay(to_coord)
 		return
 	var is_guardian := _move_is_guardian(unit)
-	_move_queue.append({"unit": unit, "from": from_coord, "to": to_coord, "guardian": is_guardian})
+	var owner := _owner_at(to_coord, unit)
+	_move_queue.append({"unit": unit, "from": from_coord, "to": to_coord, "guardian": is_guardian, "owner": owner})
 	if not _move_playing:
 		_drain_move_queue()
 
@@ -2199,18 +2267,18 @@ func _drain_move_queue() -> void:
 		return
 	_move_playing = true
 	var m = _move_queue.pop_front()
-	_animate_move(m["unit"], m["from"], m["to"], m["guardian"])
+	_animate_move(m["unit"], m["from"], m["to"], m["guardian"], m.get("owner", &""))
 
 
 ## Slide a transient ghost token between two cells, then redraw both. The real
 ## tokens live in per-cell overlays (rebuilt on redraw); the ghost is purely the
 ## in-between flourish, so logic stays authoritative.
-func _animate_move(unit, from_coord: HexCoord, to_coord: HexCoord, is_guardian: bool) -> void:
+func _animate_move(unit, from_coord: HexCoord, to_coord: HexCoord, is_guardian: bool, owner = &"") -> void:
 	var p0 := _hex_to_pixel(from_coord.q, from_coord.r)
 	var p1 := _hex_to_pixel(to_coord.q, to_coord.r)
 	# Hide the moving unit at the source immediately so it doesn't double up.
 	_redraw_cell_overlay(from_coord)
-	var ghost := _make_move_ghost(unit)
+	var ghost := _make_move_ghost(unit, owner)
 	ghost.position = p0
 	_overlay_root.add_child(ghost)
 	var dur := 0.28
@@ -2228,10 +2296,27 @@ func _animate_move(unit, from_coord: HexCoord, to_coord: HexCoord, is_guardian: 
 		_drain_move_queue())
 
 
+## Which player owns `unit` on `coord` (the engine's unit_moved signal carries
+## no owner). Identity first; falls back to the first value-equal match.
+func _owner_at(coord: HexCoord, unit) -> StringName:
+	var cell: HexCell = GameState.get_cell(coord)
+	if cell == null:
+		return &""
+	for owner in cell.units.keys():
+		for u in cell.units[owner]:
+			if is_same(u, unit):
+				return owner
+	for owner in cell.units.keys():
+		for u in cell.units[owner]:
+			if u == unit:
+				return owner
+	return &""
+
+
 ## A small sprite (or greybox rect) standing in for the moving unit.
-func _make_move_ghost(unit) -> Node2D:
+func _make_move_ghost(unit, owner = &"") -> Node2D:
 	var holder := Node2D.new()
-	var art := _unit_art(unit)
+	var art := _unit_art(unit, owner)
 	if art != null:
 		var tr := TextureRect.new()
 		tr.texture = art

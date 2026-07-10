@@ -94,6 +94,15 @@ const MISC_PATHS := {
 	&"unit_back": "tokens/units/_back.png",
 }
 
+# Player-colour art variants (WP2 prep): internal player id -> palette suffix.
+# The recoloured token PNGs live beside the originals as <id>_<palette>.png;
+# the plain files remain the neutral fallback (and the greybox contract holds).
+const PLAYER_PALETTE := {
+	&"green": "amber",
+	&"blue": "cyan",
+	&"red": "crimson",
+}
+
 var _cache: Dictionary = {}
 
 func _norm(id) -> StringName:
@@ -124,6 +133,18 @@ func _from(map: Dictionary, id) -> Texture2D:
 
 # --- Public lookups (all return null on miss -> caller draws greybox) ---
 func unit(id) -> Texture2D: return _from(UNIT_PATHS, id)
+
+## Owner-coloured unit token (falls back to the neutral art, then greybox).
+func unit_owned(id, owner) -> Texture2D:
+	var key := _norm(id)
+	var pal_key := _norm(owner)
+	if UNIT_PATHS.has(key) and PLAYER_PALETTE.has(pal_key):
+		var base: String = UNIT_PATHS[key]
+		var pal: String = PLAYER_PALETTE[pal_key]
+		var t := _tex(base.replace(".png", "_" + pal + ".png"))
+		if t != null:
+			return t
+	return unit(key)
 func guardian(id) -> Texture2D: return _from(GUARDIAN_PATHS, id)
 func leader(id) -> Texture2D: return _from(LEADER_PATHS, id)
 func artefact(id) -> Texture2D: return _from(ARTEFACT_PATHS, id)
@@ -150,6 +171,18 @@ func tile(tile_type: String, q: int, r: int) -> Texture2D:
 		_:
 			var fr: String = ROOM_TILES[abs(q * 7 + r * 13) % ROOM_TILES.size()]
 			return _tex("tiles/room_" + fr + ".png")
+
+## A specific tile face by name ("room_01", "corridor_05", "center") — used by
+## the WP1 exit-true render path (TileArtMatcher decides WHICH face).
+func tile_face(face_name: String) -> Texture2D:
+	return _tex("tiles/" + face_name + ".png")
+
+
+## Edge patch sprites for WP1: kind is "door" (paint a doorway over rock where a
+## real exit has no painted door) or "wall" (rock over a spurious painted door).
+func tile_patch(kind: String) -> Texture2D:
+	return _tex("tiles/patch_" + kind + ".png")
+
 
 ## True if ANY art loaded — lets the board view decide greybox vs sprite mode.
 func any_art_present() -> bool:
