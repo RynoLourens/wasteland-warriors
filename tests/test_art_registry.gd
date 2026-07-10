@@ -13,15 +13,13 @@ func test_unit_textures_resolve() -> void:
 
 func test_guardian_textures_resolve() -> void:
 	for id in [&"arachnid", &"blackout", &"blink", &"cutter",
-			&"scrape", &"typhoon", &"the_ox"]:
+			&"scrape", &"typhoon", &"the_ox", &"razor"]:
 		assert_not_null(ArtRegistry.guardian(id), "guardian art missing: %s" % id)
 
 
 func test_known_missing_art_returns_null_not_crash() -> void:
-	# Razor (guardian) and Lil' Minerva (leader) have no art; ancient_artifact /
-	# falling_debris env tokens have none either. All must fall back to null.
-	assert_null(ArtRegistry.guardian(&"razor"))
-	assert_null(ArtRegistry.leader(&"lil_minerva"))
+	# The ancient_artifact / falling_debris env tokens have no art (WP4 wired
+	# Razor + Lil' Minerva). Both must fall back to null, never crash.
 	assert_null(ArtRegistry.env(&"env_corridor_ancient_artifact"))
 	assert_null(ArtRegistry.env(&"env_room_falling_debris"))
 
@@ -32,7 +30,8 @@ func test_unknown_id_returns_null() -> void:
 
 
 func test_leaders_and_artefacts_resolve() -> void:
-	for id in [&"general_stormfoot", &"lady_seraph", &"siyana_the_shield", &"the_rats_eye"]:
+	for id in [&"general_stormfoot", &"lady_seraph", &"siyana_the_shield",
+			&"the_rats_eye", &"lil_minerva"]:
 		assert_not_null(ArtRegistry.leader(id), "leader art missing: %s" % id)
 	for id in [&"medical_machine", &"psychic_control_belt", &"snooperbot_6000",
 			&"sunstone_fragments", &"the_jam_gobbar"]:

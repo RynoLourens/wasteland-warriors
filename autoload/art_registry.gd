@@ -5,7 +5,7 @@ extends Node
 ## layer art-agnostic, lets the visual layer ask for art by id, and gives ONE
 ## place to handle missing assets. Any lookup that has no file returns null, and
 ## the board view falls back to its greybox shape — so a missing texture (e.g.
-## Lil' Minerva's leader card, the Razor guardian, the ancient_artifact /
+## the ancient_artifact /
 ## falling_debris env tokens) degrades gracefully instead of crashing.
 ##
 ## Textures are loaded lazily and cached via load(); ResourceLoader.exists()
@@ -35,7 +35,7 @@ const GUARDIAN_PATHS := {
 	&"scrape": "tokens/guardians/scrape.png",
 	&"typhoon": "tokens/guardians/typhoon.png",
 	&"the_ox": "tokens/guardians/the_ox.png",
-	# razor: no art -> greybox fallback.
+	&"razor": "tokens/guardians/razor.png",
 }
 
 const LEADER_PATHS := {
@@ -43,7 +43,7 @@ const LEADER_PATHS := {
 	&"lady_seraph": "leaders/lady_seraph.png",
 	&"siyana_the_shield": "leaders/siyana_the_shield.png",
 	&"the_rats_eye": "leaders/the_rats_eye.png",
-	# lil_minerva: no art -> greybox fallback.
+	&"lil_minerva": "leaders/lil_minerva.png",
 }
 
 const ARTEFACT_PATHS := {
