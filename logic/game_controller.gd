@@ -64,6 +64,11 @@ var combat_assign_provider: Callable = Callable()
 ## returns []), no support fire happens.
 var support_fire_provider: Callable = Callable()
 
+## OPTIONAL: awaited after each seat's action resolves and after Guardian
+## movement, so on-board playback (step-walks, token-reveal moments) finishes
+## before the game moves on. Set by BoardView; headless tests leave it unset.
+var move_playback_provider: Callable = Callable()
+
 
 # ---------------------------------------------------------------------------
 #  Setup
@@ -313,6 +318,9 @@ func _action_phase() -> void:
 						move_intent["token_deps"] = _token_deps_for_effects(color)
 						var result: Dictionary = ActionResolver.resolve_move_attack(state, color, move_intent)
 						emit_signal("action_resolved", color, result)
+						# Let the board finish WALKING the units and revealing tokens
+						# before combat prompts or the next seat's turn appear.
+						await _await_playback()
 						if result.get("ok", false) and result.get("combat_pending", false):
 							# Prompt the human to fire Ranged support shooters before combat (Ch.11).
 							var shooters: Array = []
@@ -338,6 +346,14 @@ func _action_phase() -> void:
 # ---------------------------------------------------------------------------
 #  Interactive per-round combat (Fix H)
 # ---------------------------------------------------------------------------
+
+## Await the UI's movement/reveal playback (no-op when unset — headless sims,
+## AI-only fast paths, tests). Keeps the round loop from visually leapfrogging
+## the board: the next seat's turn only begins once the pieces stop moving.
+func _await_playback() -> void:
+	if move_playback_provider.is_valid():
+		await move_playback_provider.call()
+
 
 ## Run combat at `coord` interactively: the human(s) involved may play one ATTACK
 ## card per round (Defensive Stance / Re-roll / Cancel / Extra Attack). Uses the
@@ -452,6 +468,7 @@ func _guardian_phase() -> StringName:
 	_fsm.guardians.defer_combats = true
 	_fsm.guardians.pending_combats = []
 	_fsm.guardians.run_guardian_movement(state, false)
+	await _await_playback()   # watch the Guardians stalk before their combats
 	for pc in _fsm.guardians.pending_combats:
 		await run_interactive_combat(pc.get("coord"), GUARDIAN_OWNER)
 	_fsm.guardians.defer_combats = false

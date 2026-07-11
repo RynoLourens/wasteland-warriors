@@ -229,6 +229,18 @@ crashes. Rename back.
 - [ ] K7. Setup screen: seat swatches now match the on-board amber/cyan/crimson, and a leader-art banner strip sits under the title (4 leaders until Minerva's art lands in WP4).
 - [ ] K8. Overall screenshot test: a stranger glancing at the screen says "that's a game", not "that's a debug tool".
 
+## Section L — movement walks + token-reveal moments (2026-07-11)
+
+- [ ] L1. Move a unit 2-3 spaces: the ghost token WALKS one space at a time along a legal route (through doors, never walls), with a small beat between hops.
+- [ ] L2. The route respects blocking: path detours around enemy-occupied spaces (Infiltrator excepted); a teleporter move slides between the two teleporter tiles.
+- [ ] L3. Move onto a face-down Environment token: AFTER the unit arrives, the token flips (back art squashes, face art springs open), holds ~0.75 s with its name caption, then settles into the normal chip.
+- [ ] L4. Function tokens flip the same way (incl. on pass-through) and the Artefact draw still happens.
+- [ ] L5. Multiple units moved in one action walk one after another, not all at once; multiple reveals play in order after the walks.
+- [ ] L6. The next player's turn (or the hotseat hand-off cover / combat readout) does NOT appear until every walk + reveal has finished. AI moves are now watchable too.
+- [ ] L7. Guardian phase: guardians still stalk one space at a time, and their combats only start after the walk finishes.
+- [ ] L8. Ghost tokens are 40 px (readable at default zoom) and never leave duplicates behind (source empties when the walk starts, destination fills when it ends).
+- [ ] L9. Full-game sanity: no hangs — pass-heavy rounds, cards, combat, and game over all still advance (the barrier can't wedge the round loop).
+
 ## How to report
 For any ✗, note: what you did, what you expected, what happened, and (if visible) any error in
 the Godot output console. Paste those back and I'll fix them.

@@ -167,6 +167,9 @@ func _ready() -> void:
 		GameController.combat_assign_provider = _combat_assign_provider
 		# Ranged support fire: human picks which Ranged Units fire INTO a combat (Ch.11).
 		GameController.support_fire_provider = _support_fire_provider
+		# Movement/reveal playback barrier: the round loop waits for the board to
+		# finish walking units + revealing tokens before the next seat acts.
+		GameController.move_playback_provider = _playback_barrier
 
 	# Section F: GameController (autoload) owns match setup + the round-loop
 	# coroutine. If a match is already running (started from the SetupScreen), just
@@ -2520,9 +2523,10 @@ func _add_hilite_colored(coord: HexCoord, col: Color) -> void:
 # ---------------------------------------------------------------------------
 
 func _on_unit_moved(unit, from_coord, to_coord) -> void:
-	# Section G.2/G.3: instead of snapping, slide a ghost token from->to so the
-	# move reads. Guardian hops are queued so they step ONE space at a time, ONE
-	# Guardian at a time (the deferred Guardian step-movement playback).
+	# Section G.2/G.3 + exploration upgrade: instead of snapping (or sliding in
+	# one jump), a ghost token WALKS the move one space at a time along the
+	# resolver's own path, so the early-game exploration reads. Guardians
+	# already emit one signal per hop.
 	if not (from_coord is HexCoord) or not (to_coord is HexCoord):
 		if from_coord is HexCoord:
 			_redraw_cell_overlay(from_coord)
@@ -2531,7 +2535,10 @@ func _on_unit_moved(unit, from_coord, to_coord) -> void:
 		return
 	var is_guardian := _move_is_guardian(unit)
 	var owner := _owner_at(to_coord, unit)
-	_move_queue.append({"unit": unit, "from": from_coord, "to": to_coord, "guardian": is_guardian, "owner": owner})
+	var path: Array = [from_coord, to_coord]
+	if not is_guardian:
+		path = _visual_path(unit, owner, from_coord, to_coord)
+	_move_queue.append({"unit": unit, "path": path, "guardian": is_guardian, "owner": owner})
 	if not _move_playing:
 		_drain_move_queue()
 
@@ -2544,39 +2551,137 @@ func _move_is_guardian(unit) -> bool:
 	return false
 
 
-## Play queued moves in order. Guardian hops get a brief pause between them.
+## Play queued moves AND token-reveal moments in order, one at a time.
 func _drain_move_queue() -> void:
 	if _move_queue.is_empty():
 		_move_playing = false
 		return
 	_move_playing = true
 	var m = _move_queue.pop_front()
-	_animate_move(m["unit"], m["from"], m["to"], m["guardian"], m.get("owner", &""))
+	if m.get("reveal", false):
+		_animate_reveal(m["coord"], m["kind"], m.get("data"))
+	else:
+		_animate_move(m["unit"], m["path"], m["guardian"], m.get("owner", &""))
 
 
-## Slide a transient ghost token between two cells, then redraw both. The real
-## tokens live in per-cell overlays (rebuilt on redraw); the ghost is purely the
-## in-between flourish, so logic stays authoritative.
-func _animate_move(unit, from_coord: HexCoord, to_coord: HexCoord, is_guardian: bool, owner = &"") -> void:
-	var p0 := _hex_to_pixel(from_coord.q, from_coord.r)
-	var p1 := _hex_to_pixel(to_coord.q, to_coord.r)
+## Walk a transient ghost token along `path` ONE SPACE AT A TIME, then redraw.
+## The real tokens live in per-cell overlays (rebuilt on redraw); the ghost is
+## purely the in-between flourish, so logic stays authoritative.
+func _animate_move(unit, path: Array, is_guardian: bool, owner = &"") -> void:
+	if path.size() < 2:
+		if path.size() == 1 and path[0] is HexCoord:
+			_redraw_cell_overlay(path[0])
+		_drain_move_queue()
+		return
+	var from_coord: HexCoord = path[0]
+	var to_coord: HexCoord = path[path.size() - 1]
 	# Hide the moving unit at the source immediately so it doesn't double up.
 	_redraw_cell_overlay(from_coord)
 	var ghost := _make_move_ghost(unit, owner)
-	ghost.position = p0
+	ghost.position = _hex_to_pixel(from_coord.q, from_coord.r)
 	_overlay_root.add_child(ghost)
-	var dur := 0.28
-	if is_guardian:
-		dur = 0.34
+	var step_dur: float = 0.30 if is_guardian else 0.22
+	var hop_pause: float = 0.16 if is_guardian else 0.08
 	var tw := create_tween()
-	tw.tween_property(ghost, "position", p1, dur) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	var pause := 0.16 if is_guardian else 0.02
-	tw.tween_interval(pause)
+	for i in range(1, path.size()):
+		var c: HexCoord = path[i]
+		tw.tween_property(ghost, "position", _hex_to_pixel(c.q, c.r), step_dur) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+		if i < path.size() - 1:
+			tw.tween_interval(hop_pause)   # beat between hops: the walk reads
+	tw.tween_interval(0.10)
 	tw.finished.connect(func ():
 		if is_instance_valid(ghost):
 			ghost.queue_free()
 		_redraw_cell_overlay(to_coord)
+		_drain_move_queue())
+
+
+## The rules-true step path for a player move — the SAME HexGraph BFS the
+## resolver uses for pass-through tokens (move 99, no blink), so the ghost
+## walks exactly the route the rules resolved (doors, teleporters, enemy
+## blocking included). Falls back to a direct slide when no path exists.
+func _visual_path(unit, owner: StringName, from_coord: HexCoord, to_coord: HexCoord) -> Array:
+	var data = unit.get("data") if unit is Dictionary else unit
+	var through := false
+	if data != null and data is Resource and "moves_through_enemies" in data:
+		through = bool(data.moves_through_enemies)
+	var abilities := {
+		"move": 99,
+		"moves_through_enemies": through,
+		"can_blink": false,
+		"owner": owner,
+	}
+	var path: Array = HexGraph.find_path(GameState.board, from_coord, to_coord, abilities)
+	if path.size() >= 2:
+		return path
+	return [from_coord, to_coord]
+
+
+## Awaited by GameController between seats: resolves once every queued walk /
+## reveal has finished playing, so turns never visually leapfrog the board.
+func _playback_barrier() -> void:
+	while _move_playing:
+		await get_tree().process_frame
+
+
+## The "you found something" moment: flip a transient chip (back art -> face
+## art) over the cell, hold it big enough to read with its name, then settle
+## into the normal 30 px chip. Queued behind the walk that triggered it.
+func _animate_reveal(coord: HexCoord, kind: String, data) -> void:
+	var front: Texture2D = _token_art(kind, data)
+	var back: Texture2D = _token_back_art(kind, data)
+	_redraw_cell_overlay(coord)
+	if front == null or data == null:
+		# No face art (or the one-shot was consumed) — keep the pop so the cell
+		# still visibly reacts, without the flip.
+		_pop_cell_overlay(coord)
+		_drain_move_queue()
+		return
+	var holder := Node2D.new()
+	holder.position = _hex_to_pixel(coord.q, coord.r)
+	_overlay_root.add_child(holder)
+	var size := 54.0
+	var spr := TextureRect.new()
+	spr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	spr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	spr.texture = back if back != null else front
+	spr.size = Vector2(size, size)
+	spr.position = Vector2(-size * 0.5, -size * 0.5)
+	spr.pivot_offset = Vector2(size * 0.5, size * 0.5)
+	spr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.add_child(spr)
+	var cap := Label.new()
+	cap.text = _token_short_name(data)
+	cap.add_theme_font_size_override("font_size", 13)
+	cap.add_theme_color_override("font_color", _token_kind_color(kind, data))
+	cap.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	cap.add_theme_constant_override("outline_size", 4)
+	cap.custom_minimum_size = Vector2(120, 0)
+	cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	cap.position = Vector2(-60, size * 0.5 + 2)
+	cap.modulate = Color(1, 1, 1, 0)
+	cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.add_child(cap)
+	var tw := create_tween()
+	# Flip: squash the BACK to a sliver, swap to the FACE, spring open.
+	tw.tween_property(spr, "scale:x", 0.02, 0.13) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	tw.tween_callback(func ():
+		if is_instance_valid(spr):
+			spr.texture = front)
+	tw.tween_property(spr, "scale:x", 1.0, 0.17) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(cap, "modulate:a", 1.0, 0.17)
+	tw.tween_interval(0.75)   # hold — let the discovery land
+	tw.tween_property(holder, "scale", Vector2(0.45, 0.45), 0.16) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tw.parallel().tween_property(holder, "modulate:a", 0.0, 0.16)
+	tw.finished.connect(func ():
+		if is_instance_valid(holder):
+			holder.queue_free()
+		_redraw_cell_overlay(coord)
+		_pop_cell_overlay(coord)
 		_drain_move_queue())
 
 
@@ -2606,23 +2711,39 @@ func _make_move_ghost(unit, owner = &"") -> Node2D:
 		tr.texture = art
 		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		tr.size = Vector2(28, 28)
-		tr.position = Vector2(-14, -14)
+		tr.size = Vector2(40, 40)
+		tr.position = Vector2(-20, -20)
 		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		holder.add_child(tr)
 	else:
 		var rect := ColorRect.new()
 		rect.color = Color(0.95, 0.95, 0.55)
-		rect.size = Vector2(24, 18)
-		rect.position = Vector2(-12, -9)
+		rect.size = Vector2(32, 24)
+		rect.position = Vector2(-16, -12)
 		holder.add_child(rect)
 	return holder
 
 
-func _on_token_flipped(coord, _player, _new_state) -> void:
-	if coord is HexCoord:
-		_redraw_cell_overlay(coord)
-		_pop_cell_overlay(coord)
+func _on_token_flipped(coord, player, _new_state) -> void:
+	if not (coord is HexCoord):
+		return
+	# Env/Function REVEALS get a queued flip moment, played in order AFTER the
+	# unit that triggered them finishes walking. Token data is captured NOW —
+	# one-shot tokens may be consumed by the time the animation plays.
+	if player == &"environment" or player == &"function":
+		var kind := "func" if player == &"function" else "env"
+		var data = null
+		var cell: HexCell = GameState.get_cell(coord)
+		if cell != null:
+			for t in cell.tokens:
+				if t.get("kind", "") == kind and t.get("face_up", false):
+					data = t.get("data")   # last face-up = the one just flipped
+		_move_queue.append({"reveal": true, "coord": coord, "kind": kind, "data": data})
+		if not _move_playing:
+			_drain_move_queue()
+		return
+	_redraw_cell_overlay(coord)
+	_pop_cell_overlay(coord)
 
 
 func _on_control_changed(coord, _player) -> void:
