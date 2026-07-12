@@ -11,6 +11,7 @@ class_name GameHUD
 
 signal handoff_confirmed(color)   ## the next human tapped "I'm ready"
 signal pass_pressed()             ## the active human tapped Pass (end their action turn)
+signal next_player_pressed()      ## the acting human tapped NEXT PLAYER (end-of-turn review done)
 
 const PLAYER_COLORS := {
 	&"green": Color(0.35, 0.78, 0.40),
@@ -37,6 +38,7 @@ var _action_bar: Control
 var _action_hint: Label
 var _hint_panel: PanelContainer
 var _pass_btn: Button
+var _next_btn: Button
 
 
 var _tooltip: PanelContainer
@@ -323,6 +325,19 @@ func _build_action_bar() -> void:
 	_pass_btn.pressed.connect(func(): pass_pressed.emit())
 	_action_bar.add_child(_pass_btn)
 
+	# NEXT PLAYER button: same bottom-right thumb arc as PASS. Never up together —
+	# PASS lives inside the (hidden-by-then) action bar; this is a direct HUD child
+	# raised only while GameController awaits the end-of-turn review beat.
+	_next_btn = Button.new()
+	_next_btn.text = "NEXT PLAYER ▶"
+	_next_btn.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_next_btn.position = Vector2(-244, -76)
+	_next_btn.custom_minimum_size = Vector2(220, 56)
+	_next_btn.add_theme_font_size_override("font_size", 22)
+	_next_btn.visible = false
+	_next_btn.pressed.connect(_on_next_player_pressed)
+	add_child(_next_btn)
+
 
 ## Show/hide the action bar (Pass + hint pill); `hint` updates the prompt line.
 func set_action_bar(shown: bool, hint: String = "") -> void:
@@ -335,6 +350,16 @@ func set_action_bar(shown: bool, hint: String = "") -> void:
 
 func set_action_hint(hint: String) -> void:
 	_action_hint.text = hint
+
+
+## Raise the end-of-turn NEXT PLAYER button; the round loop is awaiting our signal.
+func show_next_player_button() -> void:
+	_next_btn.visible = true
+
+
+func _on_next_player_pressed() -> void:
+	_next_btn.visible = false
+	emit_signal("next_player_pressed")
 
 
 # ---------------------------------------------------------------------------

@@ -69,6 +69,12 @@ var support_fire_provider: Callable = Callable()
 ## before the game moves on. Set by BoardView; headless tests leave it unset.
 var move_playback_provider: Callable = Callable()
 
+## OPTIONAL: awaited after a HUMAN seat completes an Action turn by ACTING (a
+## legal move/attack or a card — not Pass), so the UI can hold a "NEXT PLAYER"
+## button: a review beat before the next seat's turn begins. Set by BoardView;
+## headless tests and AI-only matches leave it unset.
+var turn_end_provider: Callable = Callable()
+
 
 # ---------------------------------------------------------------------------
 #  Setup
@@ -339,6 +345,12 @@ func _action_phase() -> void:
 						passed[color] = true
 						turn_done = true
 						emit_signal("seat_passed", color)
+			# This seat's turn is over. If a human just ACTED (Pass already ends on
+			# an explicit tap), hold the "NEXT PLAYER" beat so they can review the
+			# outcome before the device moves on.
+			if _running and turn_end_provider.is_valid() \
+					and color in human_colors and not passed.has(color):
+				await turn_end_provider.call(color)
 			if passed.size() >= order.size():
 				break
 

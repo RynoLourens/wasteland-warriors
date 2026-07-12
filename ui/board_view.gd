@@ -170,6 +170,9 @@ func _ready() -> void:
 		# Movement/reveal playback barrier: the round loop waits for the board to
 		# finish walking units + revealing tokens before the next seat acts.
 		GameController.move_playback_provider = _playback_barrier
+		# End-of-turn gate: after a human ACTS, the round loop holds until they
+		# tap NEXT PLAYER (GameHUD), so the result can be reviewed calmly.
+		GameController.turn_end_provider = _await_next_player
 
 	# Section F: GameController (autoload) owns match setup + the round-loop
 	# coroutine. If a match is already running (started from the SetupScreen), just
@@ -2580,8 +2583,8 @@ func _animate_move(unit, path: Array, is_guardian: bool, owner = &"") -> void:
 	var ghost := _make_move_ghost(unit, owner)
 	ghost.position = _hex_to_pixel(from_coord.q, from_coord.r)
 	_overlay_root.add_child(ghost)
-	var step_dur: float = 0.30 if is_guardian else 0.22
-	var hop_pause: float = 0.16 if is_guardian else 0.08
+	var step_dur: float = 0.55 if is_guardian else 0.42
+	var hop_pause: float = 0.30 if is_guardian else 0.18
 	var tw := create_tween()
 	for i in range(1, path.size()):
 		var c: HexCoord = path[i]
@@ -2589,7 +2592,7 @@ func _animate_move(unit, path: Array, is_guardian: bool, owner = &"") -> void:
 			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
 		if i < path.size() - 1:
 			tw.tween_interval(hop_pause)   # beat between hops: the walk reads
-	tw.tween_interval(0.10)
+	tw.tween_interval(0.18)
 	tw.finished.connect(func ():
 		if is_instance_valid(ghost):
 			ghost.queue_free()
@@ -2623,6 +2626,16 @@ func _visual_path(unit, owner: StringName, from_coord: HexCoord, to_coord: HexCo
 func _playback_barrier() -> void:
 	while _move_playing:
 		await get_tree().process_frame
+
+
+## Awaited by GameController after a human's Action turn resolves (move/card):
+## raise the NEXT PLAYER button and hold the round loop until it's tapped. The
+## action bar + hand are already down by now (hidden when the intent was sent).
+func _await_next_player(_color: StringName) -> void:
+	if _hud == null:
+		return
+	_hud.show_next_player_button()
+	await _hud.next_player_pressed
 
 
 ## The "you found something" moment: flip a transient chip (back art -> face
@@ -2665,18 +2678,18 @@ func _animate_reveal(coord: HexCoord, kind: String, data) -> void:
 	holder.add_child(cap)
 	var tw := create_tween()
 	# Flip: squash the BACK to a sliver, swap to the FACE, spring open.
-	tw.tween_property(spr, "scale:x", 0.02, 0.13) \
+	tw.tween_property(spr, "scale:x", 0.02, 0.28) \
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
 	tw.tween_callback(func ():
 		if is_instance_valid(spr):
 			spr.texture = front)
-	tw.tween_property(spr, "scale:x", 1.0, 0.17) \
+	tw.tween_property(spr, "scale:x", 1.0, 0.34) \
 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.parallel().tween_property(cap, "modulate:a", 1.0, 0.17)
-	tw.tween_interval(0.75)   # hold — let the discovery land
-	tw.tween_property(holder, "scale", Vector2(0.45, 0.45), 0.16) \
+	tw.parallel().tween_property(cap, "modulate:a", 1.0, 0.34)
+	tw.tween_interval(1.25)   # hold — let the discovery land
+	tw.tween_property(holder, "scale", Vector2(0.45, 0.45), 0.24) \
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
-	tw.parallel().tween_property(holder, "modulate:a", 0.0, 0.16)
+	tw.parallel().tween_property(holder, "modulate:a", 0.0, 0.24)
 	tw.finished.connect(func ():
 		if is_instance_valid(holder):
 			holder.queue_free()
